@@ -116,13 +116,23 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	framework := detectFramework(root, src)
 
 	// Extract route handlers
-	routeNodes, routeEdges := extractRoutes(root, src, modID, path, framework)
+	routeNodes, routeEdges := extractRoutes(root, fileCtx{
+		src:       src,
+		modID:     modID,
+		filePath:  path,
+		framework: framework,
+	})
 	nodes = append(nodes, routeNodes...)
 	edges = append(edges, routeEdges...)
 
 	// Extract NestJS decorator-based routes
 	if framework == "nestjs" {
-		nestNodes, nestEdges := extractNestJSRoutes(root, src, modID, path)
+		nestNodes, nestEdges := extractNestJSRoutes(root, fileCtx{
+			src:       src,
+			modID:     modID,
+			filePath:  path,
+			framework: framework,
+		})
 		nodes = append(nodes, nestNodes...)
 		edges = append(edges, nestEdges...)
 	}
@@ -231,63 +241,42 @@ func detectFramework(root *sitter.Node, src []byte) string {
 	return "unknown"
 }
 
-func extractRoutes(root *sitter.Node, src []byte, modID, filePath, framework string) ([]*model.Node, []*model.Edge) {
+// fileCtx bundles the per-file context an analyzer step needs to emit endpoint
+// nodes/edges. Reduces extractRoutes from 5 positional args to 2.
+type fileCtx struct {
+	src       []byte
+	modID     string
+	filePath  string
+	framework string
+}
+
+func extractRoutes(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
 	common.WalkTree(root, func(node *sitter.Node) {
-		if node.Type() != "call_expression" {
+		method, route, ok := matchRouteCall(node, ctx.src)
+		if !ok {
 			return
 		}
-
-		fn := node.ChildByFieldName("function")
-		if fn == nil || fn.Type() != "member_expression" {
-			return
-		}
-
-		prop := fn.ChildByFieldName("property")
-		if prop == nil {
-			return
-		}
-		methodName := strings.ToLower(prop.Content(src))
-		if !httpMethods[methodName] {
-			return
-		}
-
-		args := node.ChildByFieldName("arguments")
-		if args == nil || args.ChildCount() < 2 {
-			return
-		}
-
-		// First argument should be a string (the route path)
-		firstArg := args.Child(1) // Child(0) is "("
-		if firstArg == nil {
-			return
-		}
-
-		routePath := extractStringLiteral(firstArg, src)
-		if routePath == "" {
-			return
-		}
-
 		line := int(node.StartPoint().Row) + 1
-		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), line)
+		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(ctx.filePath), line)
 
 		nodes = append(nodes, &model.Node{
 			ID:       endpointID,
-			Name:     fmt.Sprintf("%s %s", strings.ToUpper(methodName), routePath),
+			Name:     fmt.Sprintf("%s %s", strings.ToUpper(method), route),
 			Type:     model.NodeEndpoint,
 			Language: "typescript",
-			Path:     filePath,
+			Path:     ctx.filePath,
 			Properties: map[string]string{
-				"method":    methodName,
-				"route":     routePath,
+				"method":    method,
+				"route":     route,
 				"line":      fmt.Sprintf("%d", line),
-				"framework": framework,
+				"framework": ctx.framework,
 			},
 		})
 		edges = append(edges, &model.Edge{
-			Source:     modID,
+			Source:     ctx.modID,
 			Target:     endpointID,
 			Type:       model.EdgeAPICall,
 			Label:      "serves",
@@ -298,9 +287,34 @@ func extractRoutes(root *sitter.Node, src []byte, modID, filePath, framework str
 	return nodes, edges
 }
 
+// matchRouteCall recognizes router.get('/path', handler) style calls and
+// returns (method, route, true). Anything else returns ok=false.
+func matchRouteCall(node *sitter.Node, src []byte) (method, route string, ok bool) {
+	if node.Type() != "call_expression" {
+		return "", "", false
+	}
+	fn := node.ChildByFieldName("function")
+	if fn == nil || fn.Type() != "member_expression" {
+		return "", "", false
+	}
+	prop := fn.ChildByFieldName("property")
+	if prop == nil {
+		return "", "", false
+	}
+	method = strings.ToLower(prop.Content(src))
+	if !httpMethods[method] {
+		return "", "", false
+	}
+	route, hasArg := firstStringArg(node, src)
+	if !hasArg {
+		return "", "", false
+	}
+	return method, route, true
+}
+
 // extractNestJSRoutes detects NestJS @Controller/@Get/@Post decorator patterns
 // and creates endpoint nodes. Also detects @Injectable() as service nodes.
-func extractNestJSRoutes(root *sitter.Node, src []byte, modID, filePath string) ([]*model.Node, []*model.Edge) {
+func extractNestJSRoutes(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
@@ -308,157 +322,131 @@ func extractNestJSRoutes(root *sitter.Node, src []byte, modID, filePath string) 
 		if node.Type() != "class_declaration" {
 			return
 		}
-
-		// Look for @Controller decorator on or above this class
-		controllerPath := findControllerPath(node, src)
-		if controllerPath == "" {
-			// Check @Injectable for service detection
-			if hasDecorator(node, src, "Injectable") {
-				className := extractClassName(node, src)
-				if className != "" {
-					line := int(node.StartPoint().Row) + 1
-					serviceID := fmt.Sprintf("service:%s:%d", filepath.Base(filePath), line)
-					nodes = append(nodes, &model.Node{
-						ID:       serviceID,
-						Name:     className,
-						Type:     model.NodeModule,
-						Language: "typescript",
-						Path:     filePath,
-						Properties: map[string]string{
-							"injectable": "true",
-							"framework":  "nestjs",
-							"line":       fmt.Sprintf("%d", line),
-						},
-					})
-					edges = append(edges, &model.Edge{
-						Source:     modID,
-						Target:     serviceID,
-						Type:       model.EdgeDependency,
-						Label:      "provides",
-						Confidence: 0.85,
-					})
-				}
-			}
+		ctrlPath := findControllerPath(node, ctx.src)
+		if ctrlPath == "" {
+			n, e := extractInjectableService(node, ctx)
+			nodes = append(nodes, n...)
+			edges = append(edges, e...)
 			return
 		}
-
-		body := node.ChildByFieldName("body")
-		if body == nil {
-			return
-		}
-
-		// Walk class body: decorators appear as siblings before method_definition
-		var pendingDecorators []*sitter.Node
-		for i := 0; i < int(body.ChildCount()); i++ {
-			child := body.Child(i)
-			if child.Type() == "decorator" {
-				pendingDecorators = append(pendingDecorators, child)
-				continue
-			}
-			if child.Type() != "method_definition" {
-				pendingDecorators = nil
-				continue
-			}
-
-			// Check pending sibling decorators for route decorators
-			httpMethod, routePath := findRouteDecorator(pendingDecorators, src)
-			if httpMethod == "" {
-				// Also check children of the method node (some grammars nest decorators)
-				httpMethod, routePath = findRouteDecorator(collectChildDecorators(child), src)
-			}
-			pendingDecorators = nil
-
-			if httpMethod == "" {
-				continue
-			}
-
-			fullPath := joinPaths(controllerPath, routePath)
-			line := int(child.StartPoint().Row) + 1
-			endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), line)
-
-			nodes = append(nodes, &model.Node{
-				ID:       endpointID,
-				Name:     fmt.Sprintf("%s %s", httpMethod, fullPath),
-				Type:     model.NodeEndpoint,
-				Language: "typescript",
-				Path:     filePath,
-				Properties: map[string]string{
-					"method":    strings.ToLower(httpMethod),
-					"route":     fullPath,
-					"line":      fmt.Sprintf("%d", line),
-					"framework": "nestjs",
-				},
-			})
-			edges = append(edges, &model.Edge{
-				Source:     modID,
-				Target:     endpointID,
-				Type:       model.EdgeAPICall,
-				Label:      "serves",
-				Confidence: 0.85,
-			})
-		}
+		n, e := extractControllerEndpoints(node, ctx, ctrlPath)
+		nodes = append(nodes, n...)
+		edges = append(edges, e...)
 	})
 
 	return nodes, edges
 }
 
-// findControllerPath looks for @Controller('path') on a class_declaration.
-// Checks both the node's own children and its parent's children (for export_statement wrapping).
-func findControllerPath(classNode *sitter.Node, src []byte) string {
-	// Check decorators that are children of the class node
-	for i := 0; i < int(classNode.ChildCount()); i++ {
-		child := classNode.Child(i)
-		if child.Type() == "decorator" {
-			name, arg := extractDecoratorInfo(child, src)
-			if name == "Controller" {
-				if arg == "" {
-					return "/"
-				}
-				return arg
-			}
-		}
+// extractInjectableService emits a service node + provides-edge when classNode
+// carries an @Injectable() decorator. Returns nil/nil otherwise.
+func extractInjectableService(classNode *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge) {
+	if !hasDecorator(classNode, ctx.src, "Injectable") {
+		return nil, nil
 	}
-
-	// Check preceding siblings in the parent (export_statement or program)
-	parent := classNode.Parent()
-	if parent == nil {
-		return ""
+	className := extractClassName(classNode, ctx.src)
+	if className == "" {
+		return nil, nil
 	}
-	for i := 0; i < int(parent.ChildCount()); i++ {
-		child := parent.Child(i)
-		if child == classNode {
-			break // Stop once we reach the class itself
-		}
-		if child.Type() == "decorator" {
-			name, arg := extractDecoratorInfo(child, src)
-			if name == "Controller" {
-				if arg == "" {
-					return "/"
-				}
-				return arg
-			}
-		}
+	line := int(classNode.StartPoint().Row) + 1
+	serviceID := fmt.Sprintf("service:%s:%d", filepath.Base(ctx.filePath), line)
+	node := &model.Node{
+		ID:       serviceID,
+		Name:     className,
+		Type:     model.NodeModule,
+		Language: "typescript",
+		Path:     ctx.filePath,
+		Properties: map[string]string{
+			"injectable": "true",
+			"framework":  ctx.framework,
+			"line":       fmt.Sprintf("%d", line),
+		},
 	}
-
-	return ""
+	edge := &model.Edge{
+		Source:     ctx.modID,
+		Target:     serviceID,
+		Type:       model.EdgeDependency,
+		Label:      "provides",
+		Confidence: 0.85,
+	}
+	return []*model.Node{node}, []*model.Edge{edge}
 }
 
-// hasDecorator checks if a class has a specific decorator (by name).
-func hasDecorator(classNode *sitter.Node, src []byte, decoratorName string) bool {
-	// Check own children
-	for i := 0; i < int(classNode.ChildCount()); i++ {
-		child := classNode.Child(i)
-		if child.Type() == "decorator" {
-			name, _ := extractDecoratorInfo(child, src)
-			if name == decoratorName {
-				return true
-			}
-		}
+// extractControllerEndpoints walks a class body and emits endpoint nodes for
+// every @Get/@Post/etc decorator on a method.
+func extractControllerEndpoints(classNode *sitter.Node, ctx fileCtx, ctrlPath string) ([]*model.Node, []*model.Edge) {
+	body := classNode.ChildByFieldName("body")
+	if body == nil {
+		return nil, nil
 	}
-	// Check preceding siblings in parent
+	var nodes []*model.Node
+	var edges []*model.Edge
+	var pending []*sitter.Node
+
+	for i := 0; i < int(body.ChildCount()); i++ {
+		child := body.Child(i)
+		if child.Type() == "decorator" {
+			pending = append(pending, child)
+			continue
+		}
+		if child.Type() != "method_definition" {
+			pending = nil
+			continue
+		}
+		method, route := methodRoute(pending, child, ctx.src)
+		pending = nil
+		if method == "" {
+			continue
+		}
+		n, e := buildNestJSEndpoint(child, ctx, joinPaths(ctrlPath, route), method)
+		nodes = append(nodes, n)
+		edges = append(edges, e)
+	}
+	return nodes, edges
+}
+
+// methodRoute resolves the HTTP method + route for a method_definition, checking
+// both sibling decorators (collected in pending) and the method's own children.
+func methodRoute(pending []*sitter.Node, method *sitter.Node, src []byte) (string, string) {
+	if httpMethod, routePath := findRouteDecorator(pending, src); httpMethod != "" {
+		return httpMethod, routePath
+	}
+	return findRouteDecorator(collectChildDecorators(method), src)
+}
+
+func buildNestJSEndpoint(method *sitter.Node, ctx fileCtx, fullPath, httpMethod string) (*model.Node, *model.Edge) {
+	line := int(method.StartPoint().Row) + 1
+	endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(ctx.filePath), line)
+	node := &model.Node{
+		ID:       endpointID,
+		Name:     fmt.Sprintf("%s %s", httpMethod, fullPath),
+		Type:     model.NodeEndpoint,
+		Language: "typescript",
+		Path:     ctx.filePath,
+		Properties: map[string]string{
+			"method":    strings.ToLower(httpMethod),
+			"route":     fullPath,
+			"line":      fmt.Sprintf("%d", line),
+			"framework": ctx.framework,
+		},
+	}
+	edge := &model.Edge{
+		Source:     ctx.modID,
+		Target:     endpointID,
+		Type:       model.EdgeAPICall,
+		Label:      "serves",
+		Confidence: 0.85,
+	}
+	return node, edge
+}
+
+// classDecorators returns the decorators attached to classNode, including
+// preceding-sibling decorators in the parent (NestJS classes wrapped in
+// export_statement carry their decorators as siblings rather than children).
+func classDecorators(classNode *sitter.Node) []*sitter.Node {
+	decorators := collectChildDecorators(classNode)
 	parent := classNode.Parent()
 	if parent == nil {
-		return false
+		return decorators
 	}
 	for i := 0; i < int(parent.ChildCount()); i++ {
 		child := parent.Child(i)
@@ -466,10 +454,34 @@ func hasDecorator(classNode *sitter.Node, src []byte, decoratorName string) bool
 			break
 		}
 		if child.Type() == "decorator" {
-			name, _ := extractDecoratorInfo(child, src)
-			if name == decoratorName {
-				return true
-			}
+			decorators = append(decorators, child)
+		}
+	}
+	return decorators
+}
+
+// findControllerPath looks for @Controller('path') on a class_declaration.
+// Returns "/" for @Controller() with no argument, or "" if not a controller.
+func findControllerPath(classNode *sitter.Node, src []byte) string {
+	for _, d := range classDecorators(classNode) {
+		name, arg := extractDecoratorInfo(d, src)
+		if name != "Controller" {
+			continue
+		}
+		if arg == "" {
+			return "/"
+		}
+		return arg
+	}
+	return ""
+}
+
+// hasDecorator checks if a class has a specific decorator (by name).
+func hasDecorator(classNode *sitter.Node, src []byte, decoratorName string) bool {
+	for _, d := range classDecorators(classNode) {
+		name, _ := extractDecoratorInfo(d, src)
+		if name == decoratorName {
+			return true
 		}
 	}
 	return false
@@ -481,30 +493,31 @@ func hasDecorator(classNode *sitter.Node, src []byte, decoratorName string) bool
 func extractDecoratorInfo(decorator *sitter.Node, src []byte) (name, arg string) {
 	for i := 0; i < int(decorator.ChildCount()); i++ {
 		child := decorator.Child(i)
-		if child.Type() == "call_expression" {
-			fn := child.ChildByFieldName("function")
-			if fn != nil && fn.Type() == "identifier" {
-				name = fn.Content(src)
-			}
-			args := child.ChildByFieldName("arguments")
-			if args != nil {
-				// First real argument (skip parentheses)
-				for j := 0; j < int(args.ChildCount()); j++ {
-					argChild := args.Child(j)
-					if argChild.Type() == "string" {
-						arg = extractStringLiteral(argChild, src)
-						break
-					}
-				}
-			}
-			return name, arg
-		}
-		// Bare decorator without call: @Get (no parentheses)
-		if child.Type() == "identifier" {
+		switch child.Type() {
+		case "call_expression":
+			return extractCallDecorator(child, src)
+		case "identifier":
 			return child.Content(src), ""
 		}
 	}
 	return "", ""
+}
+
+func extractCallDecorator(call *sitter.Node, src []byte) (name, arg string) {
+	if fn := call.ChildByFieldName("function"); fn != nil && fn.Type() == "identifier" {
+		name = fn.Content(src)
+	}
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return name, ""
+	}
+	for j := 0; j < int(args.ChildCount()); j++ {
+		argChild := args.Child(j)
+		if argChild.Type() == "string" {
+			return name, extractStringLiteral(argChild, src)
+		}
+	}
+	return name, ""
 }
 
 // extractClassName gets the class name from a class_declaration node.
@@ -570,52 +583,14 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 		if node.Type() != "call_expression" {
 			return
 		}
-
-		fn := node.ChildByFieldName("function")
-		if fn == nil {
+		method, ok := httpCallMethod(node, src)
+		if !ok {
 			return
 		}
-
-		var method string
-
-		switch fn.Type() {
-		case "identifier":
-			// fetch("http://...")
-			if fn.Content(src) != "fetch" {
-				return
-			}
-			method = "GET"
-		case "member_expression":
-			// axios.get("http://...") or client.post("http://...")
-			obj := fn.ChildByFieldName("object")
-			prop := fn.ChildByFieldName("property")
-			if obj == nil || prop == nil {
-				return
-			}
-			objName := obj.Content(src)
-			propName := strings.ToLower(prop.Content(src))
-			if !httpClientObjects[objName] || !httpMethods[propName] {
-				return
-			}
-			method = strings.ToUpper(propName)
-		default:
+		rawURL, ok := firstStringArg(node, src)
+		if !ok {
 			return
 		}
-
-		args := node.ChildByFieldName("arguments")
-		if args == nil || args.ChildCount() < 2 {
-			return
-		}
-		firstArg := args.Child(1) // Child(0) is "("
-		if firstArg == nil {
-			return
-		}
-
-		rawURL := extractStringLiteral(firstArg, src)
-		if rawURL == "" {
-			return
-		}
-
 		host, ok := common.ParseServiceFromURL(rawURL)
 		if !ok {
 			return
@@ -646,6 +621,52 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 	})
 
 	return nodes, edges
+}
+
+// httpCallMethod returns the HTTP method for a call_expression, or ok=false
+// if it isn't a recognized HTTP client invocation (fetch / axios.get / etc.).
+func httpCallMethod(call *sitter.Node, src []byte) (string, bool) {
+	fn := call.ChildByFieldName("function")
+	if fn == nil {
+		return "", false
+	}
+	switch fn.Type() {
+	case "identifier":
+		if fn.Content(src) == "fetch" {
+			return "GET", true
+		}
+		return "", false
+	case "member_expression":
+		return memberHTTPMethod(fn, src)
+	}
+	return "", false
+}
+
+func memberHTTPMethod(fn *sitter.Node, src []byte) (string, bool) {
+	obj := fn.ChildByFieldName("object")
+	prop := fn.ChildByFieldName("property")
+	if obj == nil || prop == nil {
+		return "", false
+	}
+	propName := strings.ToLower(prop.Content(src))
+	if !httpClientObjects[obj.Content(src)] || !httpMethods[propName] {
+		return "", false
+	}
+	return strings.ToUpper(propName), true
+}
+
+// firstStringArg returns the first string-literal argument to a call_expression.
+func firstStringArg(call *sitter.Node, src []byte) (string, bool) {
+	args := call.ChildByFieldName("arguments")
+	if args == nil || args.ChildCount() < 2 {
+		return "", false
+	}
+	firstArg := args.Child(1) // Child(0) is "("
+	if firstArg == nil {
+		return "", false
+	}
+	s := extractStringLiteral(firstArg, src)
+	return s, s != ""
 }
 
 // extractStringLiteral extracts a string value from a tree-sitter string node.

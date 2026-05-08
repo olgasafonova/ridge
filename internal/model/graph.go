@@ -128,10 +128,7 @@ func (g *ArchGraph) Nodes() []*Node {
 	for _, n := range g.nodes {
 		result = append(result, n)
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ID < result[j].ID
-	})
-	return result
+	return sortedByID(result)
 }
 
 // NodesByType returns nodes filtered by type.
@@ -145,10 +142,15 @@ func (g *ArchGraph) NodesByType(t NodeType) []*Node {
 			result = append(result, n)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ID < result[j].ID
+	return sortedByID(result)
+}
+
+// sortedByID sorts nodes by ID in place and returns the slice for chaining.
+func sortedByID(nodes []*Node) []*Node {
+	sort.Slice(nodes, func(i, j int) bool {
+		return nodes[i].ID < nodes[j].ID
 	})
-	return result
+	return nodes
 }
 
 // AddEdge adds an edge to the graph. Returns false if an identical edge
@@ -158,12 +160,17 @@ func (g *ArchGraph) AddEdge(e *Edge) bool {
 	defer g.mu.Unlock()
 
 	for _, existing := range g.edges {
-		if existing.Source == e.Source && existing.Target == e.Target && existing.Type == e.Type {
+		if edgesMatch(existing, e) {
 			return false
 		}
 	}
 	g.edges = append(g.edges, e)
 	return true
+}
+
+// edgesMatch reports whether two edges share the same source, target, and type.
+func edgesMatch(a, b *Edge) bool {
+	return a.Source == b.Source && a.Target == b.Target && a.Type == b.Type
 }
 
 // Edges returns all edges.
@@ -180,24 +187,20 @@ func (g *ArchGraph) Edges() []*Edge {
 func (g *ArchGraph) EdgesFrom(nodeID string) []*Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
-
-	var result []*Edge
-	for _, e := range g.edges {
-		if e.Source == nodeID {
-			result = append(result, e)
-		}
-	}
-	return result
+	return filterEdges(g.edges, func(e *Edge) bool { return e.Source == nodeID })
 }
 
 // EdgesTo returns edges targeting a specific node.
 func (g *ArchGraph) EdgesTo(nodeID string) []*Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
+	return filterEdges(g.edges, func(e *Edge) bool { return e.Target == nodeID })
+}
 
+func filterEdges(edges []*Edge, keep func(*Edge) bool) []*Edge {
 	var result []*Edge
-	for _, e := range g.edges {
-		if e.Target == nodeID {
+	for _, e := range edges {
+		if keep(e) {
 			result = append(result, e)
 		}
 	}
@@ -238,40 +241,53 @@ func (g *ArchGraph) HasCycle() bool {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
+	v := newCycleVisitor(g.edges)
+	for id := range g.nodes {
+		if v.visited[id] {
+			continue
+		}
+		if v.dfs(id) {
+			return true
+		}
+	}
+	return false
+}
+
+// cycleVisitor encapsulates DFS state for dependency cycle detection.
+type cycleVisitor struct {
+	adj     map[string][]string
+	visited map[string]bool
+	inStack map[string]bool
+}
+
+func newCycleVisitor(edges []*Edge) *cycleVisitor {
 	adj := make(map[string][]string)
-	for _, e := range g.edges {
+	for _, e := range edges {
 		if e.Type == EdgeDependency {
 			adj[e.Source] = append(adj[e.Source], e.Target)
 		}
 	}
-
-	visited := make(map[string]bool)
-	inStack := make(map[string]bool)
-
-	var dfs func(node string) bool
-	dfs = func(node string) bool {
-		visited[node] = true
-		inStack[node] = true
-
-		for _, neighbor := range adj[node] {
-			if !visited[neighbor] {
-				if dfs(neighbor) {
-					return true
-				}
-			} else if inStack[neighbor] {
-				return true
-			}
-		}
-
-		inStack[node] = false
-		return false
+	return &cycleVisitor{
+		adj:     adj,
+		visited: make(map[string]bool),
+		inStack: make(map[string]bool),
 	}
+}
 
-	for id := range g.nodes {
-		if !visited[id] {
-			if dfs(id) {
+func (v *cycleVisitor) dfs(node string) bool {
+	v.visited[node] = true
+	v.inStack[node] = true
+	defer func() { v.inStack[node] = false }()
+
+	for _, neighbor := range v.adj[node] {
+		if !v.visited[neighbor] {
+			if v.dfs(neighbor) {
 				return true
 			}
+			continue
+		}
+		if v.inStack[neighbor] {
+			return true
 		}
 	}
 	return false
@@ -290,93 +306,22 @@ func (g *ArchGraph) RelativePaths() {
 	}
 }
 
-// ResolvedEdges returns edges with "import:" targets resolved to real node IDs.
-// Import paths are matched to nodes via path suffix (e.g.
-// "import:github.com/user/repo/internal/model" → node with path "internal/model").
-// Edges whose target cannot be resolved are dropped. Duplicates are removed.
+// ResolvedEdges returns edges with "import:" and "wikilink:" targets resolved
+// to real node IDs. Edges whose target cannot be resolved are dropped.
+// Self-loops and duplicates (by source|target|type) are removed.
 func (g *ArchGraph) ResolvedEdges() []*Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	// Build suffix lookup: relPath → nodeID.
-	type pathRef struct {
-		relPath string
-		id      string
-	}
-	var refs []pathRef
-	for _, n := range g.nodes {
-		if n.Path == "" {
-			continue
-		}
-		relPath := n.Path
-		if g.RootPath != "" {
-			if rel, ok := strings.CutPrefix(n.Path, g.RootPath+"/"); ok {
-				relPath = rel
-			}
-		}
-		refs = append(refs, pathRef{relPath: relPath, id: n.ID})
-	}
-
-	importCache := make(map[string]string)   // import path → node ID ("" = unresolvable)
-	wikilinkCache := make(map[string]string) // wikilink target → node ID ("" = unresolvable)
-
-	var result []*Edge
+	resolver := newTargetResolver(g.nodes, g.RootPath)
 	seen := make(map[string]bool)
+	var result []*Edge
 
 	for _, e := range g.edges {
-		target := e.Target
-
-		if importPath, ok := strings.CutPrefix(target, "import:"); ok {
-			if nodeID, cached := importCache[importPath]; cached {
-				if nodeID == "" {
-					continue
-				}
-				target = nodeID
-			} else {
-				found := false
-				for _, ref := range refs {
-					if strings.HasSuffix(importPath, "/"+ref.relPath) || importPath == ref.relPath {
-						importCache[importPath] = ref.id
-						target = ref.id
-						found = true
-						break
-					}
-				}
-				if !found {
-					importCache[importPath] = ""
-					continue
-				}
-			}
+		target, ok := resolver.resolve(e.Target)
+		if !ok {
+			continue
 		}
-
-		if linkName, ok := strings.CutPrefix(target, "wikilink:"); ok {
-			if nodeID, cached := wikilinkCache[linkName]; cached {
-				if nodeID == "" {
-					continue
-				}
-				target = nodeID
-			} else {
-				resolved := ""
-				for _, ref := range refs {
-					stem := strings.TrimSuffix(ref.relPath, ".md")
-					stem = strings.TrimSuffix(stem, ".markdown")
-					base := stem
-					if i := strings.LastIndex(stem, "/"); i >= 0 {
-						base = stem[i+1:]
-					}
-					if base == linkName || stem == linkName || strings.HasSuffix(stem, "/"+linkName) {
-						resolved = ref.id
-						break
-					}
-				}
-				wikilinkCache[linkName] = resolved
-				if resolved == "" {
-					continue
-				}
-				target = resolved
-			}
-		}
-
 		if _, exists := g.nodes[target]; !exists {
 			continue
 		}
@@ -390,23 +335,115 @@ func (g *ArchGraph) ResolvedEdges() []*Edge {
 		}
 		seen[key] = true
 
-		conf := e.Confidence
-		if strings.HasPrefix(e.Target, "import:") && conf > 0 {
-			conf -= 0.1
-			if conf < 0.5 {
-				conf = 0.5
-			}
-		}
-
 		result = append(result, &Edge{
 			Source:     e.Source,
 			Target:     target,
 			Type:       e.Type,
 			Label:      e.Label,
-			Confidence: conf,
+			Confidence: confidenceFor(e),
 		})
 	}
 	return result
+}
+
+// confidenceFor applies the import-resolution penalty to edge confidence,
+// flooring at 0.5. Non-import targets keep their original confidence.
+func confidenceFor(e *Edge) float64 {
+	if e.Confidence <= 0 || !strings.HasPrefix(e.Target, "import:") {
+		return e.Confidence
+	}
+	conf := e.Confidence - 0.1
+	if conf < 0.5 {
+		return 0.5
+	}
+	return conf
+}
+
+// targetResolver maps edge targets with "import:" / "wikilink:" prefixes
+// to concrete node IDs by matching against node Path suffixes.
+type targetResolver struct {
+	refs          []pathRef
+	importCache   map[string]string // "" = unresolvable
+	wikilinkCache map[string]string
+}
+
+type pathRef struct {
+	relPath string
+	id      string
+}
+
+func newTargetResolver(nodes map[string]*Node, rootPath string) *targetResolver {
+	prefix := pathPrefix(rootPath)
+	var refs []pathRef
+	for _, n := range nodes {
+		if ref, ok := nodeRef(n, prefix); ok {
+			refs = append(refs, ref)
+		}
+	}
+	return &targetResolver{
+		refs:          refs,
+		importCache:   make(map[string]string),
+		wikilinkCache: make(map[string]string),
+	}
+}
+
+func pathPrefix(rootPath string) string {
+	if rootPath == "" {
+		return ""
+	}
+	return rootPath + "/"
+}
+
+func nodeRef(n *Node, prefix string) (pathRef, bool) {
+	if n.Path == "" {
+		return pathRef{}, false
+	}
+	relPath := n.Path
+	if prefix != "" {
+		if rel, ok := strings.CutPrefix(n.Path, prefix); ok {
+			relPath = rel
+		}
+	}
+	return pathRef{relPath: relPath, id: n.ID}, true
+}
+
+// resolve returns (resolvedID, ok). Unprefixed targets pass through unchanged.
+func (r *targetResolver) resolve(target string) (string, bool) {
+	if path, ok := strings.CutPrefix(target, "import:"); ok {
+		return r.lookup(path, r.importCache, importMatches)
+	}
+	if name, ok := strings.CutPrefix(target, "wikilink:"); ok {
+		return r.lookup(name, r.wikilinkCache, wikilinkMatches)
+	}
+	return target, true
+}
+
+func (r *targetResolver) lookup(key string, cache map[string]string, match func(string, pathRef) bool) (string, bool) {
+	if id, cached := cache[key]; cached {
+		return id, id != ""
+	}
+	for _, ref := range r.refs {
+		if match(key, ref) {
+			cache[key] = ref.id
+			return ref.id, true
+		}
+	}
+	cache[key] = ""
+	return "", false
+}
+
+func importMatches(importPath string, ref pathRef) bool {
+	return importPath == ref.relPath || strings.HasSuffix(importPath, "/"+ref.relPath)
+}
+
+func wikilinkMatches(linkName string, ref pathRef) bool {
+	stem := strings.TrimSuffix(ref.relPath, ".md")
+	stem = strings.TrimSuffix(stem, ".markdown")
+	base := stem
+	if i := strings.LastIndex(stem, "/"); i >= 0 {
+		base = stem[i+1:]
+	}
+	return base == linkName || stem == linkName || strings.HasSuffix(stem, "/"+linkName)
 }
 
 // Summary returns a human-readable summary of the graph.
@@ -429,27 +466,23 @@ func (g *ArchGraph) Summary() string {
 	fmt.Fprintf(&sb, "Topology: %s\n", g.Topology)
 	fmt.Fprintf(&sb, "Root: %s\n", filepath.Base(g.RootPath))
 
-	if len(typeCounts) > 0 {
-		sb.WriteString("Nodes: ")
-		parts := make([]string, 0, len(typeCounts))
-		for t, c := range typeCounts {
-			parts = append(parts, fmt.Sprintf("%d %s", c, t))
-		}
-		sort.Strings(parts)
-		sb.WriteString(strings.Join(parts, ", "))
-		sb.WriteString("\n")
-	}
-
-	if len(edgeTypeCounts) > 0 {
-		sb.WriteString("Edges: ")
-		parts := make([]string, 0, len(edgeTypeCounts))
-		for t, c := range edgeTypeCounts {
-			parts = append(parts, fmt.Sprintf("%d %s", c, t))
-		}
-		sort.Strings(parts)
-		sb.WriteString(strings.Join(parts, ", "))
-		sb.WriteString("\n")
-	}
-
+	writeCountSection(&sb, "Nodes", typeCounts)
+	writeCountSection(&sb, "Edges", edgeTypeCounts)
 	return sb.String()
+}
+
+// writeCountSection appends a sorted "label: N type, M type, ..." line if counts is non-empty.
+func writeCountSection[K ~string](sb *strings.Builder, label string, counts map[K]int) {
+	if len(counts) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(counts))
+	for t, c := range counts {
+		parts = append(parts, fmt.Sprintf("%d %s", c, string(t)))
+	}
+	sort.Strings(parts)
+	sb.WriteString(label)
+	sb.WriteString(": ")
+	sb.WriteString(strings.Join(parts, ", "))
+	sb.WriteString("\n")
 }
