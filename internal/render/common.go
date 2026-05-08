@@ -9,25 +9,29 @@ import (
 
 // FilterNodesByViewLevel filters nodes based on the requested view level.
 func FilterNodesByViewLevel(nodes []*model.Node, level ViewLevel) []*model.Node {
+	keep := keepByViewLevel(level)
 	var result []*model.Node
 	for _, n := range nodes {
-		switch level {
-		case ViewSystem:
-			// Only services and external APIs
-			if n.Type == model.NodeService || n.Type == model.NodeExternalAPI {
-				result = append(result, n)
-			}
-		case ViewContainer:
-			// Services, databases, queues, caches, external APIs, notes
-			if n.Type != model.NodePackage && n.Type != model.NodeEndpoint {
-				result = append(result, n)
-			}
-		case ViewComponent:
-			// Everything
+		if keep(n) {
 			result = append(result, n)
 		}
 	}
 	return result
+}
+
+func keepByViewLevel(level ViewLevel) func(*model.Node) bool {
+	switch level {
+	case ViewSystem:
+		return func(n *model.Node) bool {
+			return n.Type == model.NodeService || n.Type == model.NodeExternalAPI
+		}
+	case ViewContainer:
+		return func(n *model.Node) bool {
+			return n.Type != model.NodePackage && n.Type != model.NodeEndpoint
+		}
+	default:
+		return func(*model.Node) bool { return true }
+	}
 }
 
 // VisibleGraph holds filtered nodes and edges for rendering.
@@ -67,133 +71,224 @@ func FilterGraph(graph *model.ArchGraph, level ViewLevel) *VisibleGraph {
 // For each edge (u→v) of type T, if v is reachable from u through
 // intermediate nodes using only edges of type T, the direct edge is redundant.
 func (vg *VisibleGraph) TransitiveReduce() {
-	// Build adjacency grouped by edge type.
-	type adjKey = string
-	adj := make(map[adjKey]map[string][]string) // edgeType → source → targets
-	for _, e := range vg.Edges {
+	adj := buildEdgeTypeAdjacency(vg.Edges)
+	vg.Edges = filterRenderEdges(vg.Edges, func(e *model.Edge) bool {
+		return !transitiveReachable(adj[string(e.Type)], e.Source, e.Target)
+	})
+}
+
+// buildEdgeTypeAdjacency groups outgoing edges by type → source → targets.
+func buildEdgeTypeAdjacency(edges []*model.Edge) map[string]map[string][]string {
+	adj := make(map[string]map[string][]string)
+	for _, e := range edges {
 		t := string(e.Type)
 		if adj[t] == nil {
 			adj[t] = make(map[string][]string)
 		}
 		adj[t][e.Source] = append(adj[t][e.Source], e.Target)
 	}
-
-	var kept []*model.Edge
-	for _, e := range vg.Edges {
-		if transitiveReachable(adj[string(e.Type)], e.Source, e.Target) {
-			continue
-		}
-		kept = append(kept, e)
-	}
-	vg.Edges = kept
+	return adj
 }
 
 // transitiveReachable checks if target is reachable from source via a path
 // of length >= 2 (through intermediate nodes).
 func transitiveReachable(adj map[string][]string, source, target string) bool {
 	visited := map[string]bool{source: true}
-	queue := make([]string, 0)
-
-	// Seed BFS with source's neighbors, excluding the direct target.
-	for _, neighbor := range adj[source] {
-		if neighbor == target {
-			continue
-		}
-		if !visited[neighbor] {
-			visited[neighbor] = true
-			queue = append(queue, neighbor)
-		}
-	}
+	queue := seedTransitiveQueue(adj[source], target, visited)
 
 	for len(queue) > 0 {
 		curr := queue[0]
 		queue = queue[1:]
-
 		if curr == target {
 			return true
 		}
-		for _, next := range adj[curr] {
-			if !visited[next] {
-				visited[next] = true
-				queue = append(queue, next)
-			}
-		}
+		queue = enqueueUnvisited(queue, adj[curr], visited)
 	}
 	return false
 }
 
+// enqueueUnvisited appends not-yet-visited successors of curr onto queue.
+func enqueueUnvisited(queue, successors []string, visited map[string]bool) []string {
+	for _, next := range successors {
+		if visited[next] {
+			continue
+		}
+		visited[next] = true
+		queue = append(queue, next)
+	}
+	return queue
+}
+
+// seedTransitiveQueue primes BFS with source's neighbors, excluding the direct
+// target (which we're trying to prove reachable via length >= 2).
+func seedTransitiveQueue(neighbors []string, target string, visited map[string]bool) []string {
+	queue := make([]string, 0, len(neighbors))
+	for _, neighbor := range neighbors {
+		if neighbor == target || visited[neighbor] {
+			continue
+		}
+		visited[neighbor] = true
+		queue = append(queue, neighbor)
+	}
+	return queue
+}
+
+// ComputeNodeDepths returns each node's depth (longest outgoing path within
+// the visible graph) and the overall maximum depth. Cycles tie-break at 0.
+// Shared by drawio and excalidraw layout.
+func ComputeNodeDepths(vg *VisibleGraph) (map[string]int, int) {
+	w := &depthWalker{
+		outgoing:  buildVisibleOutgoing(vg),
+		depths:    make(map[string]int, len(vg.Nodes)),
+		computing: make(map[string]bool),
+	}
+	maxDepth := 0
+	for _, n := range vg.Nodes {
+		if d := w.depth(n.ID); d > maxDepth {
+			maxDepth = d
+		}
+	}
+	return w.depths, maxDepth
+}
+
+// buildVisibleOutgoing returns source→targets for edges where both endpoints
+// are visible nodes.
+func buildVisibleOutgoing(vg *VisibleGraph) map[string][]string {
+	nodeIDs := make(map[string]bool, len(vg.Nodes))
+	for _, n := range vg.Nodes {
+		nodeIDs[n.ID] = true
+	}
+	outgoing := make(map[string][]string)
+	for _, e := range vg.Edges {
+		if !nodeIDs[e.Source] || !nodeIDs[e.Target] {
+			continue
+		}
+		outgoing[e.Source] = append(outgoing[e.Source], e.Target)
+	}
+	return outgoing
+}
+
+type depthWalker struct {
+	outgoing  map[string][]string
+	depths    map[string]int
+	computing map[string]bool
+}
+
+func (w *depthWalker) depth(id string) int {
+	if d, ok := w.depths[id]; ok {
+		return d
+	}
+	if w.computing[id] {
+		return 0
+	}
+	w.computing[id] = true
+	maxChild := -1
+	for _, t := range w.outgoing[id] {
+		if cd := w.depth(t); cd > maxChild {
+			maxChild = cd
+		}
+	}
+	d := maxChild + 1
+	w.depths[id] = d
+	delete(w.computing, id)
+	return d
+}
+
+// LayerByDepth buckets nodes into depth layers (index 0 = leaves).
+func LayerByDepth(nodes []*model.Node, depths map[string]int, maxDepth int) [][]*model.Node {
+	layers := make([][]*model.Node, maxDepth+1)
+	for _, n := range nodes {
+		layers[depths[n.ID]] = append(layers[depths[n.ID]], n)
+	}
+	return layers
+}
+
 // BarycenterOrder reorders nodes within each topological layer to minimize
-// edge crossings. It takes layerNodes (grouped by depth, highest depth first)
-// and runs the barycenter heuristic: each node is placed at the average
-// position of its connected neighbors in the adjacent layer.
-// Two passes (top-down, then bottom-up) are enough for most DAGs.
+// edge crossings. Two passes (top-down, then bottom-up) suffice for most DAGs.
 func BarycenterOrder(layerNodes [][]*model.Node, edges []*model.Edge) {
 	if len(layerNodes) < 2 {
 		return
 	}
+	bo := &barycenterOrderer{
+		layerNodes: layerNodes,
+		neighbors:  buildNeighbors(edges),
+		posOf:      make(map[string]int),
+	}
+	bo.rebuildPos()
 
-	// Build bidirectional adjacency.
+	for i := 1; i < len(layerNodes); i++ {
+		bo.sortLayer(layerNodes[i])
+		bo.rebuildPos()
+	}
+	for i := len(layerNodes) - 2; i >= 0; i-- {
+		bo.sortLayer(layerNodes[i])
+		bo.rebuildPos()
+	}
+}
+
+type barycenterOrderer struct {
+	layerNodes [][]*model.Node
+	neighbors  map[string][]string
+	posOf      map[string]int
+}
+
+func (bo *barycenterOrderer) rebuildPos() {
+	for _, layer := range bo.layerNodes {
+		for j, n := range layer {
+			bo.posOf[n.ID] = j
+		}
+	}
+}
+
+func (bo *barycenterOrderer) sortLayer(layer []*model.Node) {
+	bary := make(map[string]float64, len(layer))
+	for _, n := range layer {
+		bary[n.ID] = bo.barycenter(n.ID)
+	}
+	sort.SliceStable(layer, func(i, j int) bool {
+		return bary[layer[i].ID] < bary[layer[j].ID]
+	})
+}
+
+func (bo *barycenterOrderer) barycenter(nodeID string) float64 {
+	nbrs := bo.neighbors[nodeID]
+	if len(nbrs) == 0 {
+		return float64(bo.posOf[nodeID])
+	}
+	sum := 0.0
+	for _, nb := range nbrs {
+		sum += float64(bo.posOf[nb])
+	}
+	return sum / float64(len(nbrs))
+}
+
+func buildNeighbors(edges []*model.Edge) map[string][]string {
 	neighbors := make(map[string][]string)
 	for _, e := range edges {
 		neighbors[e.Source] = append(neighbors[e.Source], e.Target)
 		neighbors[e.Target] = append(neighbors[e.Target], e.Source)
 	}
-
-	// Position index: node ID → position within its layer.
-	posOf := make(map[string]int)
-	rebuildPos := func() {
-		for _, layer := range layerNodes {
-			for j, n := range layer {
-				posOf[n.ID] = j
-			}
-		}
-	}
-	rebuildPos()
-
-	sortLayer := func(layer []*model.Node) {
-		bary := make(map[string]float64)
-		for _, n := range layer {
-			nbrs := neighbors[n.ID]
-			if len(nbrs) == 0 {
-				bary[n.ID] = float64(posOf[n.ID])
-				continue
-			}
-			sum := 0.0
-			for _, nb := range nbrs {
-				sum += float64(posOf[nb])
-			}
-			bary[n.ID] = sum / float64(len(nbrs))
-		}
-		sort.SliceStable(layer, func(i, j int) bool {
-			return bary[layer[i].ID] < bary[layer[j].ID]
-		})
-	}
-
-	// Top-down pass: fix layer 0, reorder layers 1..n based on layer above.
-	for i := 1; i < len(layerNodes); i++ {
-		sortLayer(layerNodes[i])
-		rebuildPos()
-	}
-	// Bottom-up pass: fix last layer, reorder layers n-1..0 based on layer below.
-	for i := len(layerNodes) - 2; i >= 0; i-- {
-		sortLayer(layerNodes[i])
-		rebuildPos()
-	}
+	return neighbors
 }
 
 // EdgeLabel returns a display label for an edge. It suppresses labels that
 // match the edge type name (e.g., "dependency" on a dependency edge) or that
 // duplicate the target node name, since both are redundant noise.
 func EdgeLabel(e *model.Edge, targetName string) string {
-	label := e.Label
-	if label == "" || label == string(e.Type) {
+	if isRedundantEdgeLabel(e.Label, e.Type, targetName) {
 		return ""
 	}
-	// Suppress label that just repeats the target node name.
-	if label == targetName {
-		return ""
+	return e.Label
+}
+
+func isRedundantEdgeLabel(label string, edgeType model.EdgeType, targetName string) bool {
+	if label == "" {
+		return true
 	}
-	return label
+	if label == string(edgeType) {
+		return true
+	}
+	return label == targetName
 }
 
 // PruneSuperNodes removes nodes whose fan-in ratio exceeds the threshold.
@@ -203,121 +298,133 @@ func PruneSuperNodes(vg *VisibleGraph, threshold float64) []string {
 	if threshold <= 0 || len(vg.Edges) == 0 {
 		return nil
 	}
-
-	// Count unique source nodes across all edges.
-	sources := make(map[string]bool)
-	for _, e := range vg.Edges {
-		sources[e.Source] = true
+	pruneSet := superNodeIDs(vg, threshold)
+	if len(pruneSet) == 0 {
+		return nil
 	}
-	totalSources := len(sources)
+	return applyPrune(vg, pruneSet)
+}
+
+// superNodeIDs returns the set of node IDs whose fan-in ratio exceeds the threshold.
+func superNodeIDs(vg *VisibleGraph, threshold float64) map[string]bool {
+	totalSources := countUniqueSources(vg.Edges)
 	if totalSources == 0 {
 		return nil
 	}
+	fanIn := uniqueSourcesPerTarget(vg.Edges)
 
-	// Count unique sources per target (fan-in).
+	pruneSet := make(map[string]bool)
+	for nodeID, srcSet := range fanIn {
+		if float64(len(srcSet))/float64(totalSources) > threshold {
+			pruneSet[nodeID] = true
+		}
+	}
+	return pruneSet
+}
+
+func countUniqueSources(edges []*model.Edge) int {
+	sources := make(map[string]bool)
+	for _, e := range edges {
+		sources[e.Source] = true
+	}
+	return len(sources)
+}
+
+func uniqueSourcesPerTarget(edges []*model.Edge) map[string]map[string]bool {
 	fanIn := make(map[string]map[string]bool)
-	for _, e := range vg.Edges {
+	for _, e := range edges {
 		if fanIn[e.Target] == nil {
 			fanIn[e.Target] = make(map[string]bool)
 		}
 		fanIn[e.Target][e.Source] = true
 	}
+	return fanIn
+}
 
-	// Identify super-nodes.
-	pruneSet := make(map[string]bool)
-	var prunedNames []string
-	for nodeID, srcSet := range fanIn {
-		ratio := float64(len(srcSet)) / float64(totalSources)
-		if ratio > threshold {
-			pruneSet[nodeID] = true
-		}
-	}
-
-	if len(pruneSet) == 0 {
-		return nil
-	}
-
-	// Collect pruned names and rebuild node/edge slices.
+// applyPrune removes nodes/edges in pruneSet from vg and returns the pruned names.
+func applyPrune(vg *VisibleGraph, pruneSet map[string]bool) []string {
 	nameOf := make(map[string]string, len(vg.Nodes))
 	for _, n := range vg.Nodes {
 		nameOf[n.ID] = n.Name
 	}
+
+	prunedNames := make([]string, 0, len(pruneSet))
 	for id := range pruneSet {
 		prunedNames = append(prunedNames, nameOf[id])
 		delete(vg.IDs, id)
 	}
 
-	filtered := vg.Nodes[:0]
-	for _, n := range vg.Nodes {
-		if !pruneSet[n.ID] {
-			filtered = append(filtered, n)
-		}
-	}
-	vg.Nodes = filtered
-
-	filteredEdges := vg.Edges[:0]
-	for _, e := range vg.Edges {
-		if !pruneSet[e.Source] && !pruneSet[e.Target] {
-			filteredEdges = append(filteredEdges, e)
-		}
-	}
-	vg.Edges = filteredEdges
+	vg.Nodes = filterNodes(vg.Nodes, func(n *model.Node) bool { return !pruneSet[n.ID] })
+	vg.Edges = filterRenderEdges(vg.Edges, func(e *model.Edge) bool {
+		return !pruneSet[e.Source] && !pruneSet[e.Target]
+	})
 	vg.PrunedNodes = prunedNames
-
 	return prunedNames
 }
 
 // KeepHighDegree drops nodes whose total degree (incoming + outgoing edges)
-// is below minDegree. The complement of PruneSuperNodes: instead of removing
-// the most-connected nodes, it removes the least-connected ones — useful for
-// knowledge-graph-shaped inputs (vaults, doc trees) where the meaningful
-// structure is a small set of hubs and most files are leaves.
+// is below minDegree. The complement of PruneSuperNodes: useful for
+// knowledge-graph-shaped inputs where the meaningful structure is a small set
+// of hubs and most files are leaves.
 //
 // Applied iteratively until stable: a node that loses all its edges because
-// its only neighbors were leaves below the threshold is itself dropped. This
-// prevents marooned-hub artifacts in the rendered output.
+// its only neighbors were leaves below the threshold is itself dropped.
 func KeepHighDegree(vg *VisibleGraph, minDegree int) {
 	if minDegree <= 0 || len(vg.Nodes) == 0 {
 		return
 	}
-	for {
-		degree := make(map[string]int, len(vg.Nodes))
-		for _, e := range vg.Edges {
-			degree[e.Source]++
-			degree[e.Target]++
-		}
-
-		keep := make(map[string]bool, len(vg.Nodes))
-		dropped := 0
-		for _, n := range vg.Nodes {
-			if degree[n.ID] >= minDegree {
-				keep[n.ID] = true
-			} else {
-				dropped++
-			}
-		}
-		if dropped == 0 {
-			return
-		}
-
-		filtered := vg.Nodes[:0]
-		for _, n := range vg.Nodes {
-			if keep[n.ID] {
-				filtered = append(filtered, n)
-			} else {
-				delete(vg.IDs, n.ID)
-			}
-		}
-		vg.Nodes = filtered
-
-		filteredEdges := vg.Edges[:0]
-		for _, e := range vg.Edges {
-			if keep[e.Source] && keep[e.Target] {
-				filteredEdges = append(filteredEdges, e)
-			}
-		}
-		vg.Edges = filteredEdges
+	for vg.dropBelowDegree(minDegree) {
+		// keep iterating until no node falls below the threshold
 	}
+}
+
+// dropBelowDegree performs one cull pass. Returns true if any node was dropped.
+func (vg *VisibleGraph) dropBelowDegree(minDegree int) bool {
+	degree := make(map[string]int, len(vg.Nodes))
+	for _, e := range vg.Edges {
+		degree[e.Source]++
+		degree[e.Target]++
+	}
+
+	keep := make(map[string]bool, len(vg.Nodes))
+	dropped := 0
+	for _, n := range vg.Nodes {
+		if degree[n.ID] >= minDegree {
+			keep[n.ID] = true
+		} else {
+			dropped++
+			delete(vg.IDs, n.ID)
+		}
+	}
+	if dropped == 0 {
+		return false
+	}
+
+	vg.Nodes = filterNodes(vg.Nodes, func(n *model.Node) bool { return keep[n.ID] })
+	vg.Edges = filterRenderEdges(vg.Edges, func(e *model.Edge) bool {
+		return keep[e.Source] && keep[e.Target]
+	})
+	return true
+}
+
+func filterNodes(nodes []*model.Node, keep func(*model.Node) bool) []*model.Node {
+	filtered := nodes[:0]
+	for _, n := range nodes {
+		if keep(n) {
+			filtered = append(filtered, n)
+		}
+	}
+	return filtered
+}
+
+func filterRenderEdges(edges []*model.Edge, keep func(*model.Edge) bool) []*model.Edge {
+	filtered := edges[:0]
+	for _, e := range edges {
+		if keep(e) {
+			filtered = append(filtered, e)
+		}
+	}
+	return filtered
 }
 
 // PrepareGraph applies view-level filtering and optional super-node pruning.
@@ -328,24 +435,30 @@ func PrepareGraph(graph *model.ArchGraph, opts Options) *VisibleGraph {
 	return vg
 }
 
-// SanitizeID replaces characters that are invalid in diagram node IDs.
+// sanitizeIDReplacer pre-builds the structural-character replacements once.
 // Different separators use distinct replacements to avoid collisions
-// (e.g., "api/v1" and "api.v1" produce different IDs). Any remaining
-// non-alphanumeric character is replaced with a single underscore so
-// IDs derived from filesystem paths (e.g. note basenames containing
-// parens or punctuation) parse correctly across all diagram formats.
+// (e.g., "api/v1" and "api.v1" produce different IDs).
+var sanitizeIDReplacer = strings.NewReplacer(
+	"/", "__",
+	":", "___",
+	".", "_",
+	" ", "_",
+	"-", "_",
+)
+
+// SanitizeID replaces characters that are invalid in diagram node IDs.
+// Any remaining non-alphanumeric character is replaced with a single underscore
+// so IDs derived from filesystem paths (e.g. note basenames containing parens
+// or punctuation) parse correctly across all diagram formats.
 func SanitizeID(id string) string {
-	r := strings.NewReplacer(
-		"/", "__",
-		":", "___",
-		".", "_",
-		" ", "_",
-		"-", "_",
-	)
-	out := r.Replace(id)
+	return sanitizeAlnum(sanitizeIDReplacer.Replace(id))
+}
+
+// sanitizeAlnum replaces any non-alphanumeric/underscore rune with "_".
+func sanitizeAlnum(s string) string {
 	var sb strings.Builder
-	sb.Grow(len(out))
-	for _, ch := range out {
+	sb.Grow(len(s))
+	for _, ch := range s {
 		switch {
 		case ch >= 'a' && ch <= 'z',
 			ch >= 'A' && ch <= 'Z',
