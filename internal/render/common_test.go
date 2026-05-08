@@ -192,3 +192,184 @@ func TestKeepHighDegree_KeepsDenseSubgraph(t *testing.T) {
 		}
 	}
 }
+
+func TestFilterGraph_DeduplicatesResolvedEdges(t *testing.T) {
+	g := model.NewGraph("/project")
+	g.AddNode(&model.Node{
+		ID:   "pkg:a/a",
+		Name: "a",
+		Type: model.NodePackage,
+		Path: "/project/a",
+	})
+	g.AddNode(&model.Node{
+		ID:   "pkg:b/b",
+		Name: "b",
+		Type: model.NodePackage,
+		Path: "/project/b",
+	})
+
+	// Two files in package "a" both import package "b" — produces duplicate edges
+	g.AddEdge(&model.Edge{
+		Source: "pkg:a/a",
+		Target: "import:github.com/x/project/b",
+		Type:   model.EdgeDependency,
+	})
+	g.AddEdge(&model.Edge{
+		Source: "pkg:a/a",
+		Target: "import:github.com/x/project/b",
+		Type:   model.EdgeDependency,
+	})
+
+	vg := FilterGraph(g, ViewComponent)
+
+	if len(vg.Edges) != 1 {
+		t.Errorf("expected 1 deduplicated edge, got %d", len(vg.Edges))
+	}
+}
+
+func TestFilterGraph_SkipsSelfEdges(t *testing.T) {
+	g := model.NewGraph("/project")
+	g.AddNode(&model.Node{
+		ID:   "pkg:a/a",
+		Name: "a",
+		Type: model.NodePackage,
+		Path: "/project/a",
+	})
+
+	// An edge that resolves to the same package (self-import)
+	g.AddEdge(&model.Edge{
+		Source: "pkg:a/a",
+		Target: "import:github.com/x/project/a",
+		Type:   model.EdgeDependency,
+	})
+
+	vg := FilterGraph(g, ViewComponent)
+
+	if len(vg.Edges) != 0 {
+		t.Errorf("expected 0 edges (self-edge skipped), got %d", len(vg.Edges))
+	}
+}
+
+func TestTransitiveReduce_RemovesRedundantEdges(t *testing.T) {
+	// A → B → C, plus direct A → C (redundant)
+	g := model.NewGraph("/tmp")
+	g.AddNode(&model.Node{ID: "pkg:a", Name: "a", Type: model.NodePackage})
+	g.AddNode(&model.Node{ID: "pkg:b", Name: "b", Type: model.NodePackage})
+	g.AddNode(&model.Node{ID: "pkg:c", Name: "c", Type: model.NodePackage})
+	g.AddEdge(&model.Edge{Source: "pkg:a", Target: "pkg:b", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "pkg:b", Target: "pkg:c", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "pkg:a", Target: "pkg:c", Type: model.EdgeDependency}) // redundant
+
+	vg := FilterGraph(g, ViewComponent)
+	if len(vg.Edges) != 3 {
+		t.Fatalf("before reduction: expected 3 edges, got %d", len(vg.Edges))
+	}
+
+	vg.TransitiveReduce()
+
+	if len(vg.Edges) != 2 {
+		t.Fatalf("after reduction: expected 2 edges, got %d", len(vg.Edges))
+	}
+
+	// A→C should be removed, A→B and B→C should remain
+	for _, e := range vg.Edges {
+		if e.Source == "pkg:a" && e.Target == "pkg:c" {
+			t.Error("transitive edge A→C should have been removed")
+		}
+	}
+}
+
+func TestTransitiveReduce_PreservesDifferentTypes(t *testing.T) {
+	// A → B (dependency), B → C (dependency), A → C (api_call)
+	// A→C is NOT redundant because it's a different edge type.
+	g := model.NewGraph("/tmp")
+	g.AddNode(&model.Node{ID: "svc:a", Name: "a", Type: model.NodeService})
+	g.AddNode(&model.Node{ID: "svc:b", Name: "b", Type: model.NodeService})
+	g.AddNode(&model.Node{ID: "svc:c", Name: "c", Type: model.NodeService})
+	g.AddEdge(&model.Edge{Source: "svc:a", Target: "svc:b", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "svc:b", Target: "svc:c", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "svc:a", Target: "svc:c", Type: model.EdgeAPICall})
+
+	vg := FilterGraph(g, ViewContainer)
+	vg.TransitiveReduce()
+
+	if len(vg.Edges) != 3 {
+		t.Fatalf("expected all 3 edges preserved (different types), got %d", len(vg.Edges))
+	}
+}
+
+func TestTransitiveReduce_DeepChain(t *testing.T) {
+	// A → B → C → D, plus A → C and A → D (both redundant)
+	g := model.NewGraph("/tmp")
+	for _, id := range []string{"a", "b", "c", "d"} {
+		g.AddNode(&model.Node{ID: "pkg:" + id, Name: id, Type: model.NodePackage})
+	}
+	g.AddEdge(&model.Edge{Source: "pkg:a", Target: "pkg:b", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "pkg:b", Target: "pkg:c", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "pkg:c", Target: "pkg:d", Type: model.EdgeDependency})
+	g.AddEdge(&model.Edge{Source: "pkg:a", Target: "pkg:c", Type: model.EdgeDependency}) // redundant
+	g.AddEdge(&model.Edge{Source: "pkg:a", Target: "pkg:d", Type: model.EdgeDependency}) // redundant
+
+	vg := FilterGraph(g, ViewComponent)
+	vg.TransitiveReduce()
+
+	if len(vg.Edges) != 3 {
+		t.Fatalf("expected 3 edges (chain only), got %d", len(vg.Edges))
+	}
+}
+
+func TestBarycenterOrder_ReducesCrossings(t *testing.T) {
+	// Layer 0 (top): A, B
+	// Layer 1 (bottom): C, D
+	// Edges: A→D, B→C (crossing if layers stay [A,B],[C,D])
+	// After barycenter: layer 1 should become [D,C] to uncross.
+	a := &model.Node{ID: "a", Name: "a", Type: model.NodePackage}
+	b := &model.Node{ID: "b", Name: "b", Type: model.NodePackage}
+	c := &model.Node{ID: "c", Name: "c", Type: model.NodePackage}
+	d := &model.Node{ID: "d", Name: "d", Type: model.NodePackage}
+
+	layers := [][]*model.Node{
+		{a, b}, // layer 0
+		{c, d}, // layer 1
+	}
+	edges := []*model.Edge{
+		{Source: "a", Target: "d", Type: model.EdgeDependency},
+		{Source: "b", Target: "c", Type: model.EdgeDependency},
+	}
+
+	BarycenterOrder(layers, edges)
+
+	// After ordering, layer 1 should be [D, C] (D first since A is at pos 0)
+	if layers[1][0].ID != "d" || layers[1][1].ID != "c" {
+		t.Errorf("expected layer 1 = [d, c], got [%s, %s]",
+			layers[1][0].ID, layers[1][1].ID)
+	}
+}
+
+func TestEdgeLabel(t *testing.T) {
+	tests := []struct {
+		label      string
+		edgeType   model.EdgeType
+		targetName string
+		want       string
+	}{
+		// Empty label → empty
+		{"", model.EdgeDependency, "utils", ""},
+		// Label matches edge type name → suppressed
+		{"dependency", model.EdgeDependency, "utils", ""},
+		// Label matches target node name → suppressed
+		{"utils", model.EdgeDependency, "utils", ""},
+		// Meaningful label → kept
+		{"queries", model.EdgeReadWrite, "PostgreSQL", "queries"},
+		// Label different from type and target → kept
+		{"HTTP", model.EdgeAPICall, "gateway", "HTTP"},
+	}
+	for _, tt := range tests {
+		e := &model.Edge{Type: tt.edgeType, Label: tt.label}
+		got := EdgeLabel(e, tt.targetName)
+		if got != tt.want {
+			t.Errorf("EdgeLabel(label=%q, type=%q, target=%q) = %q, want %q",
+				tt.label, tt.edgeType, tt.targetName, got, tt.want)
+		}
+	}
+}
