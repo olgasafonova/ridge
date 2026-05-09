@@ -132,15 +132,25 @@ type ArchScanResult struct {
 }
 
 func (h *HandlerRegistry) archScan(ctx context.Context, args ArchScanArgs) (*ArchScanResult, error) {
-	// Mutual exclusion: paths and path/repo cannot both be set.
-	if len(args.Paths) > 0 && (args.Path != "" || args.Repo != "") {
-		return nil, fmt.Errorf("use either path or paths, not both")
+	if err := validateScanInputs(args); err != nil {
+		return nil, err
 	}
-
 	if len(args.Paths) > 0 {
 		return h.archScanMulti(ctx, args)
 	}
 	return h.archScanSingle(ctx, args)
+}
+
+// validateScanInputs enforces the mutual exclusion between args.Paths and
+// args.Path/args.Repo: a single arch_scan call must use one shape or the other.
+func validateScanInputs(args ArchScanArgs) error {
+	if len(args.Paths) == 0 {
+		return nil
+	}
+	if args.Path != "" || args.Repo != "" {
+		return fmt.Errorf("use either path or paths, not both")
+	}
+	return nil
 }
 
 func (h *HandlerRegistry) archScanSingle(ctx context.Context, args ArchScanArgs) (*ArchScanResult, error) {

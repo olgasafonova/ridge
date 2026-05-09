@@ -54,7 +54,7 @@ func (s *Scanner) walkAndCollect(ctx context.Context, p walkParams) (files []fil
 		if walkErr != nil {
 			return nil
 		}
-		if ctx.Err() != nil || (p.maxFiles > 0 && len(files) >= p.maxFiles) {
+		if shouldStopWalk(ctx, len(files), p.maxFiles) {
 			truncated = true
 			return filepath.SkipAll
 		}
@@ -74,6 +74,15 @@ func (s *Scanner) walkAndCollect(ctx context.Context, p walkParams) (files []fil
 		truncated = true
 	}
 	return files, skipped, truncated, err
+}
+
+// shouldStopWalk reports whether the walk should bail out early because the
+// context was cancelled or the file cap has been reached.
+func shouldStopWalk(ctx context.Context, collected, maxFiles int) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	return maxFiles > 0 && collected >= maxFiles
 }
 
 // classifyWalkEntry returns the action to take for a single dir-entry plus the

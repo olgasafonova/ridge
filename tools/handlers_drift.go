@@ -82,34 +82,38 @@ func (h *HandlerRegistry) archDrift(ctx context.Context, args ArchDriftArgs) (*m
 		headRef = "HEAD"
 	}
 
-	// Checkout and scan base ref
-	basePath, baseCleanup, err := drift.CheckoutRef(ctx, path, args.BaseRef)
+	baseGraph, baseCleanup, err := h.checkoutAndScan(ctx, path, args.BaseRef, "base")
 	if err != nil {
-		return nil, fmt.Errorf("checking out base ref %s: %w", args.BaseRef, err)
+		return nil, err
 	}
 	defer baseCleanup()
 
-	baseGraph, err := h.scanner.Scan(basePath)
+	headGraph, headCleanup, err := h.checkoutAndScan(ctx, path, headRef, "head")
 	if err != nil {
-		return nil, fmt.Errorf("scanning base ref: %w", err)
-	}
-
-	// Checkout and scan head ref
-	headPath, headCleanup, err := drift.CheckoutRef(ctx, path, headRef)
-	if err != nil {
-		return nil, fmt.Errorf("checking out head ref %s: %w", headRef, err)
+		return nil, err
 	}
 	defer headCleanup()
-
-	headGraph, err := h.scanner.Scan(headPath)
-	if err != nil {
-		return nil, fmt.Errorf("scanning head ref: %w", err)
-	}
 
 	report := drift.Compare(baseGraph, headGraph)
 	report.BaseRef = args.BaseRef
 	report.CompareRef = headRef
 	return report, nil
+}
+
+// checkoutAndScan checks out a git ref into a worktree and scans it. The
+// returned cleanup must be deferred by the caller. role is used in error
+// messages ("base" / "head") so failures point at the right argument.
+func (h *HandlerRegistry) checkoutAndScan(ctx context.Context, repoPath, ref, role string) (*model.ArchGraph, func(), error) {
+	worktree, cleanup, err := drift.CheckoutRef(ctx, repoPath, ref)
+	if err != nil {
+		return nil, nil, fmt.Errorf("checking out %s ref %s: %w", role, ref, err)
+	}
+	graph, err := h.scanner.Scan(worktree)
+	if err != nil {
+		cleanup()
+		return nil, nil, fmt.Errorf("scanning %s ref: %w", role, err)
+	}
+	return graph, cleanup, nil
 }
 
 // =============================================================================

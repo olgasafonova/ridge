@@ -186,30 +186,14 @@ func (h *HandlerRegistry) archRecommend(ctx context.Context, args ArchRecommendA
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
-	// Load custom rules if present.
-	var customRules *detector.RulesConfig
-	rulesPath := filepath.Join(path, ".arch-rules.yaml")
-	if _, statErr := os.Stat(rulesPath); statErr == nil {
-		customRules, _ = detector.LoadRules(rulesPath)
-	}
-
+	customRules := loadCustomRules(path)
 	violations := detector.ValidateGraph(graph, customRules)
 	metrics := detector.ComputeMetrics(graph)
 	boundaries, _ := detector.DetectBoundaries(args.Path)
 	explanation := detector.ExplainArchitecture(graph, boundaries)
 
 	recs := detector.RecommendArchitecture(graph, violations, metrics, explanation)
-
-	// Filter by category if focus is set.
-	if args.Focus != "" {
-		filtered := make([]detector.Recommendation, 0, len(recs))
-		for _, r := range recs {
-			if r.Category == args.Focus {
-				filtered = append(filtered, r)
-			}
-		}
-		recs = filtered
-	}
+	recs = filterRecommendations(recs, args.Focus)
 
 	if recs == nil {
 		recs = []detector.Recommendation{}
@@ -220,4 +204,30 @@ func (h *HandlerRegistry) archRecommend(ctx context.Context, args ArchRecommendA
 		Summary:         fmt.Sprintf("Generated %d recommendations for %s", len(recs), path),
 		MetricsSnapshot: metrics,
 	}, nil
+}
+
+// loadCustomRules returns the parsed .arch-rules.yaml from the repo root, or
+// nil if no rules file exists or parsing fails.
+func loadCustomRules(repoPath string) *detector.RulesConfig {
+	rulesPath := filepath.Join(repoPath, ".arch-rules.yaml")
+	if _, err := os.Stat(rulesPath); err != nil {
+		return nil
+	}
+	rules, _ := detector.LoadRules(rulesPath)
+	return rules
+}
+
+// filterRecommendations returns recs unchanged when category is empty, or only
+// recommendations matching the requested category.
+func filterRecommendations(recs []detector.Recommendation, category string) []detector.Recommendation {
+	if category == "" {
+		return recs
+	}
+	out := make([]detector.Recommendation, 0, len(recs))
+	for _, r := range recs {
+		if r.Category == category {
+			out = append(out, r)
+		}
+	}
+	return out
 }

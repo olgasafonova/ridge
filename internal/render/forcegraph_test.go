@@ -135,11 +135,11 @@ func TestConnectedComponents_TwoIslands(t *testing.T) {
 	got := connectedComponents(vg)
 
 	// The 3-node island is the largest; it must be component 0.
-	if got["a"] != 0 || got["b"] != 0 || got["c"] != 0 {
-		t.Errorf("expected {a,b,c} in component 0, got a=%d b=%d c=%d", got["a"], got["b"], got["c"])
-	}
-	if got["d"] != 1 || got["e"] != 1 {
-		t.Errorf("expected {d,e} in component 1, got d=%d e=%d", got["d"], got["e"])
+	expected := map[string]int{"a": 0, "b": 0, "c": 0, "d": 1, "e": 1}
+	for node, want := range expected {
+		if got[node] != want {
+			t.Errorf("node %q: want component %d, got %d", node, want, got[node])
+		}
 	}
 }
 

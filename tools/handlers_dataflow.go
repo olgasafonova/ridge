@@ -40,23 +40,8 @@ func (h *HandlerRegistry) archDataflow(ctx context.Context, args ArchDataflowArg
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
-	var endpoints, dataPaths []string
-	for _, n := range graph.NodesByType(model.NodeEndpoint) {
-		endpoints = append(endpoints, n.Name)
-	}
-	for _, e := range graph.Edges() {
-		if e.Type == model.EdgeDataFlow || e.Type == model.EdgeReadWrite {
-			dataPaths = append(dataPaths, fmt.Sprintf("%s -> %s (%s)", e.Source, e.Target, e.Label))
-		}
-	}
-
-	if endpoints == nil {
-		endpoints = []string{}
-	}
-	if dataPaths == nil {
-		dataPaths = []string{}
-	}
-
+	endpoints := ensureSlice(collectEndpointNames(graph))
+	dataPaths := ensureSlice(collectDataPaths(graph))
 	traces := detector.ComputeTraces(graph)
 
 	return &ArchDataflowResult{
@@ -65,6 +50,28 @@ func (h *HandlerRegistry) archDataflow(ctx context.Context, args ArchDataflowArg
 		Traces:    traces,
 		Summary:   fmt.Sprintf("Found %d endpoints, %d data paths, %d process traces", len(endpoints), len(dataPaths), len(traces)),
 	}, nil
+}
+
+// collectEndpointNames returns the names of all endpoint nodes in the graph.
+func collectEndpointNames(graph *model.ArchGraph) []string {
+	nodes := graph.NodesByType(model.NodeEndpoint)
+	out := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, n.Name)
+	}
+	return out
+}
+
+// collectDataPaths returns formatted "source -> target (label)" strings for
+// every dataflow or read/write edge in the graph.
+func collectDataPaths(graph *model.ArchGraph) []string {
+	var out []string
+	for _, e := range graph.Edges() {
+		if e.Type == model.EdgeDataFlow || e.Type == model.EdgeReadWrite {
+			out = append(out, fmt.Sprintf("%s -> %s (%s)", e.Source, e.Target, e.Label))
+		}
+	}
+	return out
 }
 
 // =============================================================================

@@ -152,13 +152,21 @@ func buildPruneNotes(graph *model.ArchGraph, opts render.Options) ([]string, []s
 	}
 	vg := render.PrepareGraph(graph, opts)
 	var notes []string
-	// min_degree iterates KeepHighDegree until stable, so on sparse
-	// hub-and-spoke graphs a too-high threshold can cascade to zero
-	// nodes silently. Tell the caller why the diagram is empty.
-	if opts.MinDegree > 0 && len(vg.Nodes) == 0 && graph.NodeCount() > 0 {
+	if minDegreeCascadedToEmpty(opts, graph, vg) {
 		notes = append(notes, fmt.Sprintf(
 			"min_degree=%d filtered out all %d nodes via iterative cascade (each round drops nodes below threshold, which lowers neighbor degrees, which drops more nodes). Try a lower min_degree, or omit it to see the full graph.",
 			opts.MinDegree, graph.NodeCount()))
 	}
 	return vg.PrunedNodes, notes
+}
+
+// minDegreeCascadedToEmpty reports whether a positive MinDegree caused the
+// iterative KeepHighDegree filter to wipe out every node despite the source
+// graph being non-empty. Pulled into a predicate so the caller's guard reads
+// as one clause.
+func minDegreeCascadedToEmpty(opts render.Options, graph *model.ArchGraph, vg *render.VisibleGraph) bool {
+	if opts.MinDegree <= 0 {
+		return false
+	}
+	return len(vg.Nodes) == 0 && graph.NodeCount() > 0
 }
