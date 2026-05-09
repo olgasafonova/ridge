@@ -1,7 +1,7 @@
 # Ridge
 
 ## Project
-Go MCP server that scans codebases, generates architecture diagrams, and detects when code drifts from documented architecture. Supports Go (go/ast), TypeScript, and Python (tree-sitter). Outputs Mermaid, PlantUML, C4, Structurizr DSL, draw.io XML, and Excalidraw JSON.
+Go MCP server that scans codebases, generates architecture diagrams, and detects when code drifts from documented architecture. Supports Go (go/ast), TypeScript and Python (tree-sitter), and Markdown (regex-based wiki-link / relative-link extraction). Outputs Mermaid, PlantUML, C4, Structurizr DSL, JSON, draw.io XML, Excalidraw JSON, self-contained HTML, and a D3 force-directed graph (9 formats total).
 
 ## Architecture
 - `cmd/ridge/main.go` - entry point with stdio transport
@@ -10,22 +10,26 @@ Go MCP server that scans codebases, generates architecture diagrams, and detects
 - `internal/analyzer/golang/` - Go AST-based analysis (import-based deps, stdlib HTTP endpoints, infra classification)
 - `internal/analyzer/typescript/` - tree-sitter TypeScript analysis (import-based deps, Express endpoints, infra classification)
 - `internal/analyzer/python/` - tree-sitter Python analysis (import-based deps, Flask/FastAPI endpoints, infra classification)
-- `internal/detector/` - Boundary detection, topology inference, dataflow tracing, rule validation, recommendations
-- `internal/render/` - Output renderers: Mermaid, PlantUML, C4, Structurizr, draw.io, Excalidraw
-- `internal/drift/` - Drift detection: graph comparison (exact ID match), severity classification, reports
+- `internal/analyzer/markdown/` - Markdown link extraction (Obsidian wiki-links `[[note]]`, relative `.md` links)
+- `internal/detector/` - Boundary detection, topology inference, dataflow tracing, rule validation, recommendations, blast-radius
+- `internal/render/` - Output renderers: Mermaid, PlantUML, C4, Structurizr, JSON, draw.io, Excalidraw, HTML, forcegraph (D3)
+- `internal/drift/` - Drift detection: graph comparison (exact ID match), severity classification, reports, narrative explanations
 - `internal/registry/` - Persistent repo registry (aliases, scan metadata, state paths)
+- `internal/safepath/` - Filesystem path validation (Abs + EvalSymlinks + Rel containment)
 - `internal/infra/` - Cache, persistent state (persist.go for ~/.mcp-context/)
 - `tools/` - MCP tool definitions and handlers
 - `tracing/` - OpenTelemetry setup
 
 ## Tool Categories
-- **analysis** (6 tools): arch_scan, arch_focus, arch_dependencies, arch_dataflow, arch_boundaries, arch_explain
+- **analysis** (7 tools): arch_scan, arch_focus, arch_dependencies, arch_blast_radius, arch_dataflow, arch_boundaries, arch_explain
 - **diagram** (1 tool): arch_generate
-- **drift** (2 tools): arch_diff, arch_drift
+- **drift** (3 tools): arch_diff, arch_drift, arch_drift_explain
 - **validation** (3 tools): arch_validate, arch_metrics, arch_recommend
 - **history** (1 tool): arch_history
 - **export** (1 tool): arch_snapshot
 - **registry** (3 tools): arch_registry_add, arch_registry_remove, arch_registry_list
+
+Total: 19 tools.
 
 ## Key Patterns
 - ArchGraph is the central model; all analyzers produce Nodes and Edges into the same graph
