@@ -70,9 +70,9 @@ func TestIsStdlib(t *testing.T) {
 		{"github.com/other/repo", "github.com/user/repo", false},               // external (different module)
 	}
 	for _, tt := range tests {
-		got := isStdlib(tt.input, tt.modulePath)
+		got := Module{Path: tt.modulePath}.IsStdlib(tt.input)
 		if got != tt.want {
-			t.Errorf("isStdlib(%q, %q) = %v, want %v", tt.input, tt.modulePath, got, tt.want)
+			t.Errorf("Module{%q}.IsStdlib(%q) = %v, want %v", tt.modulePath, tt.input, got, tt.want)
 		}
 	}
 }

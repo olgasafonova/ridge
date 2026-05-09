@@ -89,61 +89,35 @@ func collectBoundaryMarkers(absRoot string) (*boundaryMarkers, error) {
 			return nil
 		}
 		rel, _ := filepath.Rel(absRoot, path)
-		classifyMarkerFile(m, d.Name(), rel)
+		classifyMarkerFile(m, fileLoc{name: d.Name(), rel: rel})
 		return nil
 	})
 	return m, err
 }
 
-// markerClassifier mutates a boundaryMarkers entry based on a relative path.
-type markerClassifier func(m *boundaryMarkers, rel string)
-
-// boundaryClassifiers dispatches a known marker file name to its classifier.
-// Keeping the table data-driven keeps classifyMarkerFile cc-clean.
-var boundaryClassifiers = map[string]markerClassifier{
-	"go.mod":              func(m *boundaryMarkers, rel string) { m.goMods = append(m.goMods, rel) },
-	"go.work":             func(m *boundaryMarkers, _ string) { m.hasGoWork = true },
-	"package.json":        func(m *boundaryMarkers, rel string) { m.packageJSONs = append(m.packageJSONs, rel) },
-	"nx.json":             func(m *boundaryMarkers, _ string) { m.hasNxJSON = true },
-	"turbo.json":          func(m *boundaryMarkers, _ string) { m.hasTurboJSON = true },
-	"rush.json":           func(m *boundaryMarkers, _ string) { m.hasRushJSON = true },
-	"pnpm-workspace.yaml": func(m *boundaryMarkers, _ string) { m.hasPnpmWorkspace = true },
-	"Dockerfile":          appendDockerfile,
-	"dockerfile":          appendDockerfile,
-	"docker-compose.yml":  setHasDockerCompose,
-	"docker-compose.yaml": setHasDockerCompose,
-	"compose.yml":         setHasDockerCompose,
-	"compose.yaml":        setHasDockerCompose,
-	"pyproject.toml":      appendPyProject,
-	"setup.py":            appendPyProject,
-	"setup.cfg":           appendPyProject,
-	"Cargo.toml":          func(m *boundaryMarkers, rel string) { m.cargoTomls = append(m.cargoTomls, rel) },
-	"pom.xml":             func(m *boundaryMarkers, rel string) { m.pomXMLs = append(m.pomXMLs, rel) },
-	"build.gradle":        appendGradleBuild,
-	"build.gradle.kts":    appendGradleBuild,
+// fileLoc is a marker file's basename plus its relative path inside the
+// scanned project. Bundling these tames a string-heavy signature.
+type fileLoc struct {
+	name string
+	rel  string
 }
 
-func appendDockerfile(m *boundaryMarkers, rel string)  { m.dockerfiles = append(m.dockerfiles, rel) }
-func setHasDockerCompose(m *boundaryMarkers, _ string) { m.hasDockerCompose = true }
-func appendPyProject(m *boundaryMarkers, rel string)   { m.pyProjects = append(m.pyProjects, rel) }
-func appendGradleBuild(m *boundaryMarkers, rel string) { m.gradleBuilds = append(m.gradleBuilds, rel) }
-
 // classifyMarkerFile updates m based on a single file name + relative path.
-func classifyMarkerFile(m *boundaryMarkers, name, rel string) {
-	if classify, ok := boundaryClassifiers[name]; ok {
-		classify(m, rel)
+func classifyMarkerFile(m *boundaryMarkers, loc fileLoc) {
+	if classify, ok := boundaryClassifiers[loc.name]; ok {
+		classify(m, loc.rel)
 	}
-	if isInDeployDir(name, rel) {
+	if isInDeployDir(loc) {
 		m.hasK8sManifests = true
 	}
 }
 
 // isInDeployDir returns true for *.yaml/*.yml files under k8s/, kubernetes/, or deploy/.
-func isInDeployDir(name, rel string) bool {
-	if !strings.HasSuffix(name, ".yaml") && !strings.HasSuffix(name, ".yml") {
+func isInDeployDir(loc fileLoc) bool {
+	if !strings.HasSuffix(loc.name, ".yaml") && !strings.HasSuffix(loc.name, ".yml") {
 		return false
 	}
-	dir := filepath.Dir(rel)
+	dir := filepath.Dir(loc.rel)
 	return strings.Contains(dir, "k8s") || strings.Contains(dir, "kubernetes") || strings.Contains(dir, "deploy")
 }
 
@@ -182,19 +156,19 @@ func buildBoundaries(boundaries []Boundary, absRoot string, m *boundaryMarkers) 
 		})
 	}
 	for _, df := range m.dockerfiles {
-		boundaries = appendOrAugment(boundaries, boundaryAt(df, absRoot, "service", "Dockerfile"), augmentExisting)
+		boundaries = appendOrAugment(boundaries, boundaryAt(df, absRoot, boundaryKind{typ: "service", marker: "Dockerfile"}), augmentExisting)
 	}
 	for _, py := range m.pyProjects {
-		boundaries = appendOrAugment(boundaries, boundaryAt(py, absRoot, "module", filepath.Base(py)), skipExisting)
+		boundaries = appendOrAugment(boundaries, boundaryAt(py, absRoot, boundaryKind{typ: "module", marker: filepath.Base(py)}), skipExisting)
 	}
 	for _, cargo := range m.cargoTomls {
-		boundaries = appendOrAugment(boundaries, boundaryAt(cargo, absRoot, "module", "Cargo.toml"), skipExisting)
+		boundaries = appendOrAugment(boundaries, boundaryAt(cargo, absRoot, boundaryKind{typ: "module", marker: "Cargo.toml"}), skipExisting)
 	}
 	for _, pom := range m.pomXMLs {
-		boundaries = appendOrAugment(boundaries, boundaryAt(pom, absRoot, "module", "pom.xml"), skipExisting)
+		boundaries = appendOrAugment(boundaries, boundaryAt(pom, absRoot, boundaryKind{typ: "module", marker: "pom.xml"}), skipExisting)
 	}
 	for _, gradle := range m.gradleBuilds {
-		boundaries = appendOrAugment(boundaries, boundaryAt(gradle, absRoot, "module", filepath.Base(gradle)), skipExisting)
+		boundaries = appendOrAugment(boundaries, boundaryAt(gradle, absRoot, boundaryKind{typ: "module", marker: filepath.Base(gradle)}), skipExisting)
 	}
 	return boundaries
 }
@@ -208,14 +182,20 @@ const (
 	augmentExisting                  // append our marker to the existing boundary
 )
 
+// boundaryKind labels what kind of boundary a marker produces.
+type boundaryKind struct {
+	typ    string // "service" or "module"
+	marker string // file name to record on the Boundary
+}
+
 // boundaryAt builds a Boundary from a marker file's relative path.
-func boundaryAt(markerPath, absRoot, kind, marker string) Boundary {
+func boundaryAt(markerPath, absRoot string, kind boundaryKind) Boundary {
 	dir := filepath.Dir(markerPath)
 	return Boundary{
 		Name:    boundaryName(dir, absRoot),
 		Path:    dir,
-		Type:    kind,
-		Markers: []string{marker},
+		Type:    kind.typ,
+		Markers: []string{kind.marker},
 	}
 }
 

@@ -44,7 +44,7 @@ func (h *HandlerRegistry) archDependencies(ctx context.Context, args ArchDepende
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
-	external, infra := collectExternalAndInfra(graph, readModulePath(path))
+	external, infra := collectExternalAndInfra(graph, loadModule(path))
 	internal := collectInternal(graph)
 
 	return &ArchDependenciesResult{
@@ -66,7 +66,7 @@ const (
 // classifyDependency returns the bucket for a single dependency edge plus the
 // label to record. depSkip means the edge contributes nothing (wrong type or
 // stdlib). Pulled out of archDependencies to flatten the loop body.
-func classifyDependency(e *model.Edge, graph *model.ArchGraph, modulePath string) (string, dependencyKind) {
+func classifyDependency(e *model.Edge, graph *model.ArchGraph, mod Module) (string, dependencyKind) {
 	if e.Type != model.EdgeDependency {
 		return "", depSkip
 	}
@@ -82,7 +82,7 @@ func classifyDependency(e *model.Edge, graph *model.ArchGraph, modulePath string
 		}
 	}
 
-	if isStdlib(target, modulePath) {
+	if mod.IsStdlib(target) {
 		return "", depSkip
 	}
 	return target, depExternal
@@ -90,10 +90,10 @@ func classifyDependency(e *model.Edge, graph *model.ArchGraph, modulePath string
 
 // collectExternalAndInfra walks dependency edges once, deduplicating by label
 // and bucketing into external vs infrastructure.
-func collectExternalAndInfra(graph *model.ArchGraph, modulePath string) (external, infra []string) {
+func collectExternalAndInfra(graph *model.ArchGraph, mod Module) (external, infra []string) {
 	seen := make(map[string]bool)
 	for _, e := range graph.Edges() {
-		label, kind := classifyDependency(e, graph, modulePath)
+		label, kind := classifyDependency(e, graph, mod)
 		if kind == depSkip || seen[label] {
 			continue
 		}
@@ -192,29 +192,37 @@ func (h *HandlerRegistry) archBlastRadius(ctx context.Context, args ArchBlastRad
 // Module path / stdlib helpers
 // =============================================================================
 
-// readModulePath extracts the module declaration from go.mod in the given directory.
-// Returns "" if go.mod doesn't exist or can't be parsed.
-func readModulePath(dir string) string {
+// Module wraps the module declaration loaded from a project's go.mod and owns
+// the rules for classifying an import path as internal vs stdlib vs external.
+type Module struct {
+	Path string
+}
+
+// loadModule reads go.mod from dir and returns a Module. An empty Module
+// (Path: "") means go.mod was missing or unparseable; classification still
+// works (everything not-stdlib looks external).
+func loadModule(dir string) Module {
 	data, err := os.ReadFile(filepath.Join(dir, "go.mod"))
 	if err != nil {
-		return ""
+		return Module{}
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "module ") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "module "))
+			return Module{Path: strings.TrimSpace(strings.TrimPrefix(line, "module "))}
 		}
 	}
-	return ""
+	return Module{}
 }
 
-func isStdlib(importPath, modulePath string) bool {
-	// If it belongs to the scanned module, it's internal — not stdlib
-	if modulePath != "" && strings.HasPrefix(importPath, modulePath) {
+// IsStdlib reports whether importPath belongs to the Go standard library or
+// the extended stdlib (golang.org/x/*). Imports that belong to this Module
+// are internal, not stdlib.
+func (m Module) IsStdlib(importPath string) bool {
+	if m.Path != "" && strings.HasPrefix(importPath, m.Path) {
 		return false
 	}
 	// Go stdlib packages don't contain dots in the first path segment.
-	// Extended stdlib (golang.org/x/*) also excluded from external deps.
 	first, _, _ := strings.Cut(importPath, "/")
 	if !strings.Contains(first, ".") {
 		return true
