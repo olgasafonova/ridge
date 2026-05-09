@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/olgasafonova/ridge/internal/model"
 	"github.com/olgasafonova/ridge/internal/render"
 	"github.com/olgasafonova/ridge/internal/safepath"
 )
@@ -50,6 +51,27 @@ func (h *HandlerRegistry) archGenerate(ctx context.Context, args ArchGenerateArg
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
+	opts := buildRenderOptions(args)
+
+	diagram, err := dispatchRenderer(graph, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	prunedNodes, notes := buildPruneNotes(graph, opts)
+
+	return &ArchGenerateResult{
+		Format:      string(opts.Format),
+		Diagram:     diagram,
+		Summary:     graph.Summary(),
+		PrunedNodes: prunedNodes,
+		Notes:       notes,
+	}, nil
+}
+
+// buildRenderOptions assembles render.Options from arch_generate args, applying
+// per-field defaults. Pulled out of archGenerate to keep its complexity flat.
+func buildRenderOptions(args ArchGenerateArgs) render.Options {
 	opts := render.DefaultOptions()
 	if args.Format != "" {
 		opts.Format = render.Format(args.Format)
@@ -77,52 +99,47 @@ func (h *HandlerRegistry) archGenerate(ctx context.Context, args ArchGenerateArg
 	if args.MinDegree > 0 {
 		opts.MinDegree = args.MinDegree
 	}
+	return opts
+}
 
-	var diagram string
-	switch opts.Format {
-	case render.FormatMermaid:
-		diagram = render.Mermaid(graph, opts)
-	case render.FormatPlantUML:
-		diagram = render.PlantUML(graph, opts)
-	case render.FormatC4:
-		diagram = render.C4(graph, opts)
-	case render.FormatStructurizr:
-		diagram = render.Structurizr(graph, opts)
-	case render.FormatJSON:
-		diagram = render.JSON(graph, opts)
-	case render.FormatDrawIO:
-		diagram = render.DrawIO(graph, opts)
-	case render.FormatExcalidraw:
-		diagram = render.Excalidraw(graph, opts)
-	case render.FormatHTML:
-		diagram = render.HTML(graph, opts)
-	case render.FormatForceGraph:
-		diagram = render.ForceGraph(graph, opts)
-	default:
-		return nil, fmt.Errorf("unsupported format: %s (supported: mermaid, plantuml, c4, structurizr, json, drawio, excalidraw, html, forcegraph)", args.Format)
+// renderFuncs maps each supported render format to its renderer function.
+// Keeping the dispatch as data instead of a switch flattens archGenerate's
+// cyclomatic complexity and makes adding a new format a one-line change.
+var renderFuncs = map[render.Format]func(*model.ArchGraph, render.Options) string{
+	render.FormatMermaid:     render.Mermaid,
+	render.FormatPlantUML:    render.PlantUML,
+	render.FormatC4:          render.C4,
+	render.FormatStructurizr: render.Structurizr,
+	render.FormatJSON:        render.JSON,
+	render.FormatDrawIO:      render.DrawIO,
+	render.FormatExcalidraw:  render.Excalidraw,
+	render.FormatHTML:        render.HTML,
+	render.FormatForceGraph:  render.ForceGraph,
+}
+
+func dispatchRenderer(graph *model.ArchGraph, opts render.Options) (string, error) {
+	fn, ok := renderFuncs[opts.Format]
+	if !ok {
+		return "", fmt.Errorf("unsupported format: %s (supported: mermaid, plantuml, c4, structurizr, json, drawio, excalidraw, html, forcegraph)", opts.Format)
 	}
+	return fn(graph, opts), nil
+}
 
-	// Report which nodes were pruned (if any) and surface filter warnings.
-	var prunedNodes []string
+// buildPruneNotes returns the list of nodes pruned by render filters and any
+// caller-facing notes about silent filter cascades.
+func buildPruneNotes(graph *model.ArchGraph, opts render.Options) ([]string, []string) {
+	if opts.PruneThreshold <= 0 && opts.MinDegree <= 0 {
+		return nil, nil
+	}
+	vg := render.PrepareGraph(graph, opts)
 	var notes []string
-	if opts.PruneThreshold > 0 || opts.MinDegree > 0 {
-		vg := render.PrepareGraph(graph, opts)
-		prunedNodes = vg.PrunedNodes
-		// min_degree iterates KeepHighDegree until stable, so on sparse
-		// hub-and-spoke graphs a too-high threshold can cascade to zero
-		// nodes silently. Tell the caller why the diagram is empty.
-		if opts.MinDegree > 0 && len(vg.Nodes) == 0 && graph.NodeCount() > 0 {
-			notes = append(notes, fmt.Sprintf(
-				"min_degree=%d filtered out all %d nodes via iterative cascade (each round drops nodes below threshold, which lowers neighbor degrees, which drops more nodes). Try a lower min_degree, or omit it to see the full graph.",
-				opts.MinDegree, graph.NodeCount()))
-		}
+	// min_degree iterates KeepHighDegree until stable, so on sparse
+	// hub-and-spoke graphs a too-high threshold can cascade to zero
+	// nodes silently. Tell the caller why the diagram is empty.
+	if opts.MinDegree > 0 && len(vg.Nodes) == 0 && graph.NodeCount() > 0 {
+		notes = append(notes, fmt.Sprintf(
+			"min_degree=%d filtered out all %d nodes via iterative cascade (each round drops nodes below threshold, which lowers neighbor degrees, which drops more nodes). Try a lower min_degree, or omit it to see the full graph.",
+			opts.MinDegree, graph.NodeCount()))
 	}
-
-	return &ArchGenerateResult{
-		Format:      string(opts.Format),
-		Diagram:     diagram,
-		Summary:     graph.Summary(),
-		PrunedNodes: prunedNodes,
-		Notes:       notes,
-	}, nil
+	return vg.PrunedNodes, notes
 }
