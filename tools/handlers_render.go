@@ -73,17 +73,32 @@ func (h *HandlerRegistry) archGenerate(ctx context.Context, args ArchGenerateArg
 // per-field defaults. Pulled out of archGenerate to keep its complexity flat.
 func buildRenderOptions(args ArchGenerateArgs) render.Options {
 	opts := render.DefaultOptions()
+	applyFormatAndView(&opts, args)
+	applyDisplayOverrides(&opts, args)
+	applyFilterOverrides(&opts, args)
+	return opts
+}
+
+// applyFormatAndView sets the diagram format and view level. HTML output
+// defaults to the component view because the container view produces
+// near-empty output for Go MCP servers (packages and endpoints, no
+// service-type nodes).
+func applyFormatAndView(opts *render.Options, args ArchGenerateArgs) {
 	if args.Format != "" {
 		opts.Format = render.Format(args.Format)
 	}
 	if args.ViewLevel != "" {
 		opts.ViewLevel = render.ViewLevel(args.ViewLevel)
-	} else if opts.Format == render.FormatHTML {
-		// Human-facing HTML defaults to the full component view; the
-		// container default produces near-empty output for Go MCP
-		// servers (packages and endpoints, no service-type nodes).
+		return
+	}
+	if opts.Format == render.FormatHTML {
 		opts.ViewLevel = render.ViewComponent
 	}
+}
+
+// applyDisplayOverrides copies non-empty title/direction/theme settings from
+// args into opts.
+func applyDisplayOverrides(opts *render.Options, args ArchGenerateArgs) {
 	if args.Title != "" {
 		opts.Title = args.Title
 	}
@@ -93,13 +108,17 @@ func buildRenderOptions(args ArchGenerateArgs) render.Options {
 	if args.ThemeBG != "" || args.ThemeFG != "" {
 		opts.Theme = render.Theme{BG: args.ThemeBG, FG: args.ThemeFG}
 	}
+}
+
+// applyFilterOverrides copies positive prune-threshold and min-degree settings
+// from args into opts.
+func applyFilterOverrides(opts *render.Options, args ArchGenerateArgs) {
 	if args.PruneThreshold > 0 {
 		opts.PruneThreshold = args.PruneThreshold
 	}
 	if args.MinDegree > 0 {
 		opts.MinDegree = args.MinDegree
 	}
-	return opts
 }
 
 // renderFuncs maps each supported render format to its renderer function.
