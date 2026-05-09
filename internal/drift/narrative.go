@@ -19,42 +19,71 @@ func Narrate(report *model.DiffReport) string {
 		return fmt.Sprintf("No structural change between %s and %s.", baseRef, headRef)
 	}
 
+	groups := classifyDiff(report)
+
+	sentences := []string{
+		fmt.Sprintf("Between %s and %s, %s.", baseRef, headRef, dominantMove(groups)),
+	}
+	sentences = appendNodeSentences(sentences, groups)
+	sentences = appendEdgeSentence(sentences, groups)
+	sentences = appendValidationOrSeverity(sentences, report, groups.validations)
+
+	return strings.Join(sentences, " ")
+}
+
+// diffGroups buckets a DiffReport's entries by category and change kind so the
+// narrative builders can speak in counts and slices instead of re-filtering.
+type diffGroups struct {
+	addedNodes   []model.DiffEntry
+	removedNodes []model.DiffEntry
+	addedEdges   []model.DiffEntry
+	removedEdges []model.DiffEntry
+	modified     []model.DiffEntry
+	validations  []model.DiffEntry
+}
+
+func classifyDiff(report *model.DiffReport) diffGroups {
 	added := report.ChangesByType(model.ChangeAdded)
 	removed := report.ChangesByType(model.ChangeRemoved)
-	modified := report.ChangesByType(model.ChangeModified)
-
-	addedNodes := filterCategory(added, "node")
-	removedNodes := filterCategory(removed, "node")
-	addedEdges := filterCategory(added, "edge")
-	removedEdges := filterCategory(removed, "edge")
-	validations := filterCategory(report.Changes, "validation")
-
-	var sentences []string
-
-	headline := dominantMove(addedNodes, removedNodes, addedEdges, removedEdges, modified)
-	sentences = append(sentences, fmt.Sprintf("Between %s and %s, %s.", baseRef, headRef, headline))
-
-	if len(addedNodes) > 0 {
-		sentences = append(sentences, capitalize(formatNodeGroup("added", addedNodes))+".")
+	return diffGroups{
+		addedNodes:   filterCategory(added, "node"),
+		removedNodes: filterCategory(removed, "node"),
+		addedEdges:   filterCategory(added, "edge"),
+		removedEdges: filterCategory(removed, "edge"),
+		modified:     report.ChangesByType(model.ChangeModified),
+		validations:  filterCategory(report.Changes, "validation"),
 	}
-	if len(removedNodes) > 0 {
-		sentences = append(sentences, capitalize(formatNodeGroup("removed", removedNodes))+".")
-	}
-	if len(addedEdges) > 0 || len(removedEdges) > 0 {
-		sentences = append(sentences, capitalize(formatEdgeChange(len(addedEdges), len(removedEdges)))+".")
-	}
+}
 
+func appendNodeSentences(sentences []string, g diffGroups) []string {
+	if len(g.addedNodes) > 0 {
+		sentences = append(sentences, capitalize(formatNodeGroup("added", g.addedNodes))+".")
+	}
+	if len(g.removedNodes) > 0 {
+		sentences = append(sentences, capitalize(formatNodeGroup("removed", g.removedNodes))+".")
+	}
+	return sentences
+}
+
+func appendEdgeSentence(sentences []string, g diffGroups) []string {
+	if len(g.addedEdges) == 0 && len(g.removedEdges) == 0 {
+		return sentences
+	}
+	return append(sentences, capitalize(formatEdgeChange(len(g.addedEdges), len(g.removedEdges)))+".")
+}
+
+func appendValidationOrSeverity(sentences []string, report *model.DiffReport, validations []model.DiffEntry) []string {
 	if len(validations) > 0 {
 		details := make([]string, 0, len(validations))
 		for _, v := range validations {
 			details = append(details, v.Detail)
 		}
-		sentences = append(sentences, "Validation: "+strings.Join(details, "; ")+".")
-	} else if report.MaxSeverity == model.SeverityHigh {
-		sentences = append(sentences, "Overall severity: high.")
+		return append(sentences, "Validation: "+strings.Join(details, "; ")+".")
 	}
-
-	return strings.Join(sentences, " ")
+	if report.MaxSeverity == model.SeverityHigh {
+		return append(sentences, "Overall severity: high.")
+	}
+	return sentences
 }
 
 func refOf(report *model.DiffReport, base bool) string {
@@ -76,32 +105,38 @@ func refOrDefault(ref, def string) string {
 
 // dominantMove picks the highest-impact phrase to lead the paragraph with.
 // Validation issues outrank node changes, which outrank edge changes.
-func dominantMove(addedNodes, removedNodes, addedEdges, removedEdges, modified []model.DiffEntry) string {
-	totalNodes := len(addedNodes) + len(removedNodes)
-	totalEdges := len(addedEdges) + len(removedEdges)
+func dominantMove(g diffGroups) string {
+	totalNodes := len(g.addedNodes) + len(g.removedNodes)
+	totalEdges := len(g.addedEdges) + len(g.removedEdges)
 
 	switch {
 	case totalNodes > 0:
-		parts := []string{}
-		if len(addedNodes) > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s added", len(addedNodes), pluralize("component", len(addedNodes))))
-		}
-		if len(removedNodes) > 0 {
-			parts = append(parts, fmt.Sprintf("%d removed", len(removedNodes)))
-		}
-		if len(modified) > 0 {
-			parts = append(parts, fmt.Sprintf("%d modified", len(modified)))
-		}
-		if totalEdges > 0 {
-			parts = append(parts, fmt.Sprintf("%d dependency %s changed", totalEdges, pluralize("edge", totalEdges)))
-		}
-		return strings.Join(parts, ", ")
+		return strings.Join(nodeMoveParts(g, totalEdges), ", ")
 	case totalEdges > 0:
 		return fmt.Sprintf("%d dependency %s changed", totalEdges, pluralize("edge", totalEdges))
-	case len(modified) > 0:
-		return fmt.Sprintf("%d %s modified in place", len(modified), pluralize("component", len(modified)))
+	case len(g.modified) > 0:
+		return fmt.Sprintf("%d %s modified in place", len(g.modified), pluralize("component", len(g.modified)))
 	}
 	return "structural changes detected"
+}
+
+// nodeMoveParts builds the comma-joined fragments for the leading sentence
+// when nodes are the dominant change.
+func nodeMoveParts(g diffGroups, totalEdges int) []string {
+	parts := make([]string, 0, 4)
+	if len(g.addedNodes) > 0 {
+		parts = append(parts, fmt.Sprintf("%d %s added", len(g.addedNodes), pluralize("component", len(g.addedNodes))))
+	}
+	if len(g.removedNodes) > 0 {
+		parts = append(parts, fmt.Sprintf("%d removed", len(g.removedNodes)))
+	}
+	if len(g.modified) > 0 {
+		parts = append(parts, fmt.Sprintf("%d modified", len(g.modified)))
+	}
+	if totalEdges > 0 {
+		parts = append(parts, fmt.Sprintf("%d dependency %s changed", totalEdges, pluralize("edge", totalEdges)))
+	}
+	return parts
 }
 
 // formatNodeGroup builds a phrase like "added 2 packages (foo, bar) and 1 database (postgres)".
@@ -187,35 +222,34 @@ func pluralize(word string, n int) string {
 	return word + "s"
 }
 
+// typeNouns maps a node-ID prefix to its (singular, plural) display nouns.
+// Unknown prefixes fall back to ("node", "nodes").
+var typeNouns = map[string][2]string{
+	"pkg":          {"package", "packages"},
+	"svc":          {"service", "services"},
+	"service":      {"service", "services"},
+	"module":       {"module", "modules"},
+	"db":           {"database", "databases"},
+	"database":     {"database", "databases"},
+	"queue":        {"queue", "queues"},
+	"cache":        {"cache", "caches"},
+	"infra":        {"infrastructure component", "infrastructure components"},
+	"api":          {"external API", "external APIs"},
+	"external_api": {"external API", "external APIs"},
+	"endpoint":     {"endpoint", "endpoints"},
+	"note":         {"note", "notes"},
+}
+
 // pluralizeType maps ID prefixes to friendly nouns for narrative output.
 func pluralizeType(prefix string, n int) string {
-	singular, plural := "node", "nodes"
-	switch prefix {
-	case "pkg":
-		singular, plural = "package", "packages"
-	case "svc", "service":
-		singular, plural = "service", "services"
-	case "module":
-		singular, plural = "module", "modules"
-	case "db", "database":
-		singular, plural = "database", "databases"
-	case "queue":
-		singular, plural = "queue", "queues"
-	case "cache":
-		singular, plural = "cache", "caches"
-	case "infra":
-		singular, plural = "infrastructure component", "infrastructure components"
-	case "api", "external_api":
-		singular, plural = "external API", "external APIs"
-	case "endpoint":
-		singular, plural = "endpoint", "endpoints"
-	case "note":
-		singular, plural = "note", "notes"
+	pair, ok := typeNouns[prefix]
+	if !ok {
+		pair = [2]string{"node", "nodes"}
 	}
 	if n == 1 {
-		return singular
+		return pair[0]
 	}
-	return plural
+	return pair[1]
 }
 
 func capitalize(s string) string {

@@ -47,6 +47,10 @@ var (
 
 	// Fenced code block: ``` or ~~~ on its own line, possibly with a language tag.
 	fenceOpenRe = regexp.MustCompile("(?m)^[ \\t]*(```+|~~~+)[^\\n]*$")
+
+	// nonRelativeMarkdownPrefixes are link prefixes that mean "not a relative
+	// markdown file" — external schemes and special protocols.
+	nonRelativeMarkdownPrefixes = []string{"mailto:", "tel:"}
 )
 
 // maxFileBytes caps how much of any one markdown file we read. Vaults
@@ -62,25 +66,10 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 
-	dir := filepath.Base(filepath.Dir(path))
-	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	noteID := fmt.Sprintf("note:%s/%s", dir, stem)
+	noteID, stem := noteIdentifiers(path)
 
 	if info.Size() > maxFileBytes {
-		// Emit the note node so the file is visible in the graph but skip
-		// link extraction. Properties record the reason for downstream tools.
-		return []*model.Node{{
-			ID:       noteID,
-			Name:     stem,
-			Type:     model.NodeNote,
-			Language: "markdown",
-			Path:     path,
-			Properties: map[string]string{
-				"skipped":      "size",
-				"size_bytes":   fmt.Sprintf("%d", info.Size()),
-				"max_capacity": fmt.Sprintf("%d", maxFileBytes),
-			},
-		}}, nil, nil
+		return []*model.Node{noteSkippedForSize(noteID, stem, path, info.Size())}, nil, nil
 	}
 
 	src, err := os.ReadFile(path) //nolint:gosec // G304: path is from filesystem walker, not user input
@@ -88,22 +77,52 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	nodes := []*model.Node{
-		{
-			ID:       noteID,
-			Name:     stem,
-			Type:     model.NodeNote,
-			Language: "markdown",
-			Path:     path,
+	stripped := stripInlineCode(stripCodeBlocks(string(src)))
+
+	seen := make(map[string]bool) // dedupe identical link targets within one file
+	edges := extractWikiLinks(noteID, stripped, seen)
+	edges = append(edges, extractMarkdownLinks(noteID, stripped, seen)...)
+
+	nodes := []*model.Node{{
+		ID:       noteID,
+		Name:     stem,
+		Type:     model.NodeNote,
+		Language: "markdown",
+		Path:     path,
+	}}
+	return nodes, edges, nil
+}
+
+// noteIdentifiers derives the canonical note ID and display stem from a markdown file path.
+func noteIdentifiers(path string) (id, stem string) {
+	dir := filepath.Base(filepath.Dir(path))
+	stem = strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	id = fmt.Sprintf("note:%s/%s", dir, stem)
+	return id, stem
+}
+
+// noteSkippedForSize builds a note node for a markdown file that exceeds the
+// scan size cap. The file is visible in the graph but no link extraction runs.
+func noteSkippedForSize(id, stem, path string, size int64) *model.Node {
+	return &model.Node{
+		ID:       id,
+		Name:     stem,
+		Type:     model.NodeNote,
+		Language: "markdown",
+		Path:     path,
+		Properties: map[string]string{
+			"skipped":      "size",
+			"size_bytes":   fmt.Sprintf("%d", size),
+			"max_capacity": fmt.Sprintf("%d", maxFileBytes),
 		},
 	}
+}
 
-	stripped := stripCodeBlocks(string(src))
-	stripped = stripInlineCode(stripped)
-
+// extractWikiLinks emits an EdgeDependency for each unique [[target]] / [[target|display]]
+// found in stripped. seen is shared across link types so a wiki-link and an md-link to
+// the same target dedupe to one edge.
+func extractWikiLinks(noteID, stripped string, seen map[string]bool) []*model.Edge {
 	var edges []*model.Edge
-	seen := make(map[string]bool) // dedupe identical link targets within one file
-
 	for _, m := range wikiLinkRe.FindAllStringSubmatch(stripped, -1) {
 		inner := strings.TrimSpace(m[1])
 		if inner == "" {
@@ -113,11 +132,9 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 		if linkTarget == "" {
 			continue
 		}
-		key := "wiki|" + linkTarget
-		if seen[key] {
+		if !markSeen(seen, "wiki|"+linkTarget) {
 			continue
 		}
-		seen[key] = true
 		edges = append(edges, &model.Edge{
 			Source:     noteID,
 			Target:     "wikilink:" + linkTarget,
@@ -126,7 +143,13 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 			Confidence: 0.9,
 		})
 	}
+	return edges
+}
 
+// extractMarkdownLinks emits an EdgeDependency for each unique relative .md link.
+// External URLs, mailto:, anchors, and non-markdown targets are skipped.
+func extractMarkdownLinks(noteID, stripped string, seen map[string]bool) []*model.Edge {
+	var edges []*model.Edge
 	for _, m := range mdLinkRe.FindAllStringSubmatch(stripped, -1) {
 		display := strings.TrimSpace(m[1])
 		raw := strings.TrimSpace(m[2])
@@ -134,11 +157,9 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 		if !ok {
 			continue
 		}
-		key := "md|" + linkTarget
-		if seen[key] {
+		if !markSeen(seen, "md|"+linkTarget) {
 			continue
 		}
-		seen[key] = true
 		edges = append(edges, &model.Edge{
 			Source:     noteID,
 			Target:     "wikilink:" + linkTarget,
@@ -147,8 +168,17 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 			Confidence: 0.85,
 		})
 	}
+	return edges
+}
 
-	return nodes, edges, nil
+// markSeen records key in seen and reports whether the caller should proceed
+// (true on first sight, false if already seen).
+func markSeen(seen map[string]bool, key string) bool {
+	if seen[key] {
+		return false
+	}
+	seen[key] = true
+	return true
 }
 
 // splitWikiTarget parses an Obsidian wiki-link inner string.
@@ -175,26 +205,46 @@ func relativeMarkdownTarget(raw string) (string, bool) {
 	if raw == "" || strings.HasPrefix(raw, "#") {
 		return "", false
 	}
-	if strings.Contains(raw, "://") || strings.HasPrefix(raw, "mailto:") || strings.HasPrefix(raw, "tel:") {
+	if isExternalLink(raw) {
 		return "", false
 	}
-	// Strip any fragment / query.
-	if i := strings.IndexAny(raw, "#?"); i >= 0 {
-		raw = raw[:i]
-	}
-	if raw == "" {
+	raw = stripFragmentAndQuery(raw)
+	if !isMarkdownExtension(raw) {
 		return "", false
 	}
-	ext := strings.ToLower(filepath.Ext(raw))
-	if ext != ".md" && ext != ".markdown" {
-		return "", false
-	}
-	stem := strings.TrimSuffix(filepath.Base(raw), filepath.Ext(raw))
-	stem = strings.TrimSpace(stem)
+	stem := strings.TrimSpace(strings.TrimSuffix(filepath.Base(raw), filepath.Ext(raw)))
 	if stem == "" {
 		return "", false
 	}
 	return stem, true
+}
+
+// isExternalLink reports whether raw points outside the local markdown tree:
+// either a scheme-qualified URL or one of the special protocols (mailto:/tel:).
+func isExternalLink(raw string) bool {
+	if strings.Contains(raw, "://") {
+		return true
+	}
+	for _, prefix := range nonRelativeMarkdownPrefixes {
+		if strings.HasPrefix(raw, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripFragmentAndQuery returns raw with any "#fragment" or "?query" suffix removed.
+func stripFragmentAndQuery(raw string) string {
+	if i := strings.IndexAny(raw, "#?"); i >= 0 {
+		return raw[:i]
+	}
+	return raw
+}
+
+// isMarkdownExtension reports whether raw ends in .md or .markdown (case-insensitive).
+func isMarkdownExtension(raw string) bool {
+	ext := strings.ToLower(filepath.Ext(raw))
+	return ext == ".md" || ext == ".markdown"
 }
 
 // stripCodeBlocks removes fenced code blocks (``` or ~~~) so links inside them are ignored.
@@ -207,11 +257,8 @@ func stripCodeBlocks(s string) string {
 	var fenceChar byte
 	for _, line := range lines {
 		if !inBlock {
-			if loc := fenceOpenRe.FindStringIndex(line); loc != nil {
-				trimmed := strings.TrimLeft(line, " \t")
-				if len(trimmed) > 0 {
-					fenceChar = trimmed[0]
-				}
+			if opened, ch := openingFence(line); opened {
+				fenceChar = ch
 				inBlock = true
 				out = append(out, "")
 				continue
@@ -219,15 +266,39 @@ func stripCodeBlocks(s string) string {
 			out = append(out, line)
 			continue
 		}
-		// In a block: only the matching fence character closes it.
-		trimmed := strings.TrimLeft(line, " \t")
-		if (fenceChar == '`' && strings.HasPrefix(trimmed, "```")) ||
-			(fenceChar == '~' && strings.HasPrefix(trimmed, "~~~")) {
+		if closesFence(line, fenceChar) {
 			inBlock = false
 		}
 		out = append(out, "")
 	}
 	return strings.Join(out, "\n")
+}
+
+// openingFence reports whether line starts a fenced code block and, if so,
+// returns the fence character ('`' or '~').
+func openingFence(line string) (bool, byte) {
+	if fenceOpenRe.FindStringIndex(line) == nil {
+		return false, 0
+	}
+	trimmed := strings.TrimLeft(line, " \t")
+	if trimmed == "" {
+		return true, 0
+	}
+	return true, trimmed[0]
+}
+
+// closesFence reports whether line closes a code block opened with fenceChar.
+// Only the matching fence character can close the block — a stray fence of
+// the other kind inside a block does not terminate it.
+func closesFence(line string, fenceChar byte) bool {
+	trimmed := strings.TrimLeft(line, " \t")
+	switch fenceChar {
+	case '`':
+		return strings.HasPrefix(trimmed, "```")
+	case '~':
+		return strings.HasPrefix(trimmed, "~~~")
+	}
+	return false
 }
 
 // stripInlineCode replaces backtick-delimited inline code spans with spaces of equal length,
@@ -242,45 +313,54 @@ func stripInlineCode(s string) string {
 			i++
 			continue
 		}
-		// Count opening backticks.
-		j := i
-		for j < len(s) && s[j] == '`' {
-			j++
-		}
-		runLen := j - i
-		// Find matching closing run of the same length.
-		end := -1
-		k := j
-		for k < len(s) {
-			if s[k] != '`' {
-				k++
-				continue
-			}
-			m := k
-			for m < len(s) && s[m] == '`' {
-				m++
-			}
-			if m-k == runLen {
-				end = k
-				break
-			}
-			k = m
-		}
+		runLen, afterOpen := scanBacktickRun(s, i)
+		end := findClosingRun(s, afterOpen, runLen)
 		if end == -1 {
-			// No closing fence; emit literally.
-			b.WriteString(s[i:j])
-			i = j
+			b.WriteString(s[i:afterOpen])
+			i = afterOpen
 			continue
 		}
-		// Replace span (including fences) with spaces, preserving newlines.
-		for p := i; p < end+runLen; p++ {
-			if s[p] == '\n' {
-				b.WriteByte('\n')
-			} else {
-				b.WriteByte(' ')
-			}
-		}
+		writeSpaceMask(&b, s, i, end+runLen)
 		i = end + runLen
 	}
 	return b.String()
+}
+
+// scanBacktickRun counts a contiguous run of backticks starting at i, returning
+// its length and the index just past the run.
+func scanBacktickRun(s string, i int) (int, int) {
+	j := i
+	for j < len(s) && s[j] == '`' {
+		j++
+	}
+	return j - i, j
+}
+
+// findClosingRun searches s[from:] for a backtick run of exactly length runLen
+// and returns its starting index, or -1 if no matching closing run exists.
+func findClosingRun(s string, from, runLen int) int {
+	for k := from; k < len(s); {
+		if s[k] != '`' {
+			k++
+			continue
+		}
+		_, m := scanBacktickRun(s, k)
+		if m-k == runLen {
+			return k
+		}
+		k = m
+	}
+	return -1
+}
+
+// writeSpaceMask writes s[start:end] to b with every non-newline character
+// replaced by a space, preserving line/column offsets.
+func writeSpaceMask(b *strings.Builder, s string, start, end int) {
+	for p := start; p < end; p++ {
+		if s[p] == '\n' {
+			b.WriteByte('\n')
+		} else {
+			b.WriteByte(' ')
+		}
+	}
 }

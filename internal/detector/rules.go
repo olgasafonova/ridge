@@ -88,62 +88,81 @@ func checkNoDependency(graph *model.ArchGraph, rule Rule, rootPath string) []Vio
 }
 
 func checkRequireDependency(graph *model.ArchGraph, rule Rule, rootPath string) []Violation {
-	// Find all source nodes matching From
-	var sources []*model.Node
-	for _, n := range graph.Nodes() {
-		if matchNode(n, rule.From, rootPath) {
-			sources = append(sources, n)
-		}
-	}
+	sources := findMatchingNodes(graph, rule.From, rootPath)
 	if len(sources) == 0 {
 		return nil
 	}
 
-	// Check each source has at least one edge to a matching target
 	var violations []Violation
 	for _, src := range sources {
-		found := false
-		for _, e := range graph.EdgesFrom(src.ID) {
-			targetNode := graph.GetNode(e.Target)
-			if targetNode != nil && matchNode(targetNode, rule.To, rootPath) {
-				found = true
-				break
-			}
+		if hasMatchingDependency(graph, src, rule.To, rootPath) {
+			continue
 		}
-		if !found {
-			violations = append(violations, Violation{
-				Rule:     rule.Name,
-				Severity: parseSeverity(rule.Severity),
-				Subject:  src.Name,
-				Detail:   fmt.Sprintf("%s: %s %q has no dependency matching target criteria", rule.Name, src.Type, src.Name),
-			})
-		}
+		violations = append(violations, Violation{
+			Rule:     rule.Name,
+			Severity: parseSeverity(rule.Severity),
+			Subject:  src.Name,
+			Detail:   fmt.Sprintf("%s: %s %q has no dependency matching target criteria", rule.Name, src.Type, src.Name),
+		})
 	}
 	return violations
 }
 
+// findMatchingNodes returns every node that satisfies matcher.
+func findMatchingNodes(graph *model.ArchGraph, matcher Matcher, rootPath string) []*model.Node {
+	var out []*model.Node
+	for _, n := range graph.Nodes() {
+		if matchNode(n, matcher, rootPath) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// hasMatchingDependency reports whether src has at least one outgoing edge
+// pointing to a node that satisfies matcher.
+func hasMatchingDependency(graph *model.ArchGraph, src *model.Node, matcher Matcher, rootPath string) bool {
+	for _, e := range graph.EdgesFrom(src.ID) {
+		target := graph.GetNode(e.Target)
+		if target != nil && matchNode(target, matcher, rootPath) {
+			return true
+		}
+	}
+	return false
+}
+
 func matchNode(node *model.Node, matcher Matcher, rootPath string) bool {
-	if matcher.Type != "" {
-		if string(node.Type) != matcher.Type {
-			return false
-		}
+	if matcher.Type == "" && matcher.Path == "" {
+		return false
 	}
-	if matcher.Path != "" {
-		relPath := node.Path
-		if rootPath != "" && strings.HasPrefix(relPath, rootPath) {
-			relPath = strings.TrimPrefix(relPath, rootPath)
-			relPath = strings.TrimPrefix(relPath, string(filepath.Separator))
-		}
-		matched, _ := filepath.Match(matcher.Path, relPath)
-		if !matched {
-			// Try matching with /** suffix for directory glob
-			dirMatched, _ := filepath.Match(matcher.Path, filepath.Dir(relPath))
-			if !dirMatched {
-				return false
-			}
-		}
+	if matcher.Type != "" && string(node.Type) != matcher.Type {
+		return false
 	}
-	return matcher.Type != "" || matcher.Path != ""
+	if matcher.Path != "" && !pathMatches(matcher.Path, node.Path, rootPath) {
+		return false
+	}
+	return true
+}
+
+// pathMatches checks whether nodePath, made relative to rootPath, matches
+// pattern either directly or with the directory portion (which lets a
+// directory glob like "internal/foo" match files inside it).
+func pathMatches(pattern, nodePath, rootPath string) bool {
+	rel := relativizePath(nodePath, rootPath)
+	if matched, _ := filepath.Match(pattern, rel); matched {
+		return true
+	}
+	matched, _ := filepath.Match(pattern, filepath.Dir(rel))
+	return matched
+}
+
+// relativizePath strips rootPath (and the following separator) from p when
+// p sits underneath it. Otherwise p is returned unchanged.
+func relativizePath(p, rootPath string) string {
+	if rootPath == "" || !strings.HasPrefix(p, rootPath) {
+		return p
+	}
+	return strings.TrimPrefix(strings.TrimPrefix(p, rootPath), string(filepath.Separator))
 }
 
 func parseSeverity(s string) model.DiffSeverity {

@@ -230,8 +230,19 @@ func detectFramework(root *sitter.Node, src []byte) string {
 	return "unknown"
 }
 
+// routeContext bundles the per-file inputs that route extraction needs so
+// extractRoutes can stay below the function-arg threshold and the inner
+// callback can read as a single delegation.
+type routeContext struct {
+	src       []byte
+	modID     string
+	filePath  string
+	framework string
+}
+
 // extractRoutes finds Flask/FastAPI route decorators.
 func extractRoutes(root *sitter.Node, src []byte, modID, filePath, framework string) ([]*model.Node, []*model.Edge) {
+	rc := routeContext{src: src, modID: modID, filePath: filePath, framework: framework}
 	var nodes []*model.Node
 	var edges []*model.Edge
 
@@ -239,100 +250,109 @@ func extractRoutes(root *sitter.Node, src []byte, modID, filePath, framework str
 		if node.Type() != "decorated_definition" {
 			return
 		}
-
-		// Look for decorator nodes within the decorated_definition
 		for i := 0; i < int(node.ChildCount()); i++ {
 			child := node.Child(i)
 			if child.Type() != "decorator" {
 				continue
 			}
-
-			method, routePath := extractDecoratorRoute(child, src)
-			if routePath == "" {
-				continue
+			if n, e, ok := buildRouteFromDecorator(child, node, rc); ok {
+				nodes = append(nodes, n)
+				edges = append(edges, e)
 			}
-
-			line := int(node.StartPoint().Row) + 1
-			endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), line)
-
-			fw := framework
-			if fw == "unknown" {
-				// Fallback heuristic: "route" is more common in Flask
-				if method == "route" {
-					fw = "flask"
-				} else {
-					fw = "fastapi"
-				}
-			}
-
-			nodes = append(nodes, &model.Node{
-				ID:       endpointID,
-				Name:     fmt.Sprintf("%s %s", strings.ToUpper(method), routePath),
-				Type:     model.NodeEndpoint,
-				Language: "python",
-				Path:     filePath,
-				Properties: map[string]string{
-					"method":    method,
-					"route":     routePath,
-					"line":      fmt.Sprintf("%d", line),
-					"framework": fw,
-				},
-			})
-			edges = append(edges, &model.Edge{
-				Source:     modID,
-				Target:     endpointID,
-				Type:       model.EdgeAPICall,
-				Label:      "serves",
-				Confidence: 0.85,
-			})
 		}
 	})
 
 	return nodes, edges
 }
 
+// buildRouteFromDecorator parses one decorator and returns the endpoint node,
+// "serves" edge, and ok=true when the decorator carries an HTTP route.
+func buildRouteFromDecorator(decorator, defNode *sitter.Node, rc routeContext) (*model.Node, *model.Edge, bool) {
+	method, routePath := extractDecoratorRoute(decorator, rc.src)
+	if routePath == "" {
+		return nil, nil, false
+	}
+	line := int(defNode.StartPoint().Row) + 1
+	endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(rc.filePath), line)
+	fw := resolveFramework(rc.framework, method)
+
+	node := &model.Node{
+		ID:       endpointID,
+		Name:     fmt.Sprintf("%s %s", strings.ToUpper(method), routePath),
+		Type:     model.NodeEndpoint,
+		Language: "python",
+		Path:     rc.filePath,
+		Properties: map[string]string{
+			"method":    method,
+			"route":     routePath,
+			"line":      fmt.Sprintf("%d", line),
+			"framework": fw,
+		},
+	}
+	edge := &model.Edge{
+		Source:     rc.modID,
+		Target:     endpointID,
+		Type:       model.EdgeAPICall,
+		Label:      "serves",
+		Confidence: 0.85,
+	}
+	return node, edge, true
+}
+
+// resolveFramework picks a concrete framework label when import detection
+// returned "unknown": "route" is Flask-typical, anything else maps to FastAPI.
+func resolveFramework(detected, method string) string {
+	if detected != "unknown" {
+		return detected
+	}
+	if method == "route" {
+		return "flask"
+	}
+	return "fastapi"
+}
+
 // extractDecoratorRoute parses a decorator like @app.route('/path') or @app.get('/path').
 func extractDecoratorRoute(decorator *sitter.Node, src []byte) (method, routePath string) {
-	// Walk decorator children to find the call expression
 	common.WalkTree(decorator, func(node *sitter.Node) {
 		if routePath != "" {
 			return // already found
 		}
-		if node.Type() != "call" {
+		m, p, ok := parseRouteCall(node, src)
+		if !ok {
 			return
 		}
-
-		fn := node.ChildByFieldName("function")
-		if fn == nil {
-			return
-		}
-
-		// Check for attribute pattern: app.route, app.get, etc.
-		if fn.Type() == "attribute" {
-			attr := fn.ChildByFieldName("attribute")
-			if attr == nil {
-				return
-			}
-			methodName := strings.ToLower(attr.Content(src))
-			if !httpMethods[methodName] {
-				return
-			}
-
-			// Extract first string argument
-			args := node.ChildByFieldName("arguments")
-			if args == nil {
-				return
-			}
-
-			path := extractFirstStringArg(args, src)
-			if path != "" {
-				method = methodName
-				routePath = path
-			}
-		}
+		method, routePath = m, p
 	})
-
 	return method, routePath
+}
+
+// parseRouteCall recognizes a tree-sitter call node as @app.<httpmethod>('/path')
+// and returns (method, path, true) on success.
+func parseRouteCall(node *sitter.Node, src []byte) (string, string, bool) {
+	if node.Type() != "call" {
+		return "", "", false
+	}
+	fn := node.ChildByFieldName("function")
+	if fn == nil || fn.Type() != "attribute" {
+		return "", "", false
+	}
+	attr := fn.ChildByFieldName("attribute")
+	if attr == nil {
+		return "", "", false
+	}
+	methodName := strings.ToLower(attr.Content(src))
+	if !httpMethods[methodName] {
+		return "", "", false
+	}
+	args := node.ChildByFieldName("arguments")
+	if args == nil {
+		return "", "", false
+	}
+	path := extractFirstStringArg(args, src)
+	if path == "" {
+		return "", "", false
+	}
+	return methodName, path, true
 }
 
 // extractFirstStringArg finds the first string literal in an argument_list node.
@@ -352,59 +372,77 @@ var djangoURLFuncs = map[string]bool{
 	"re_path": true,
 }
 
+// djangoURLCall describes one matched Django path()/re_path() invocation.
+type djangoURLCall struct {
+	funcName string
+	route    string
+	line     int
+}
+
+// matchDjangoURLCall recognizes a tree-sitter call node as path('/x', ...) or
+// re_path(r'^x$', ...) and returns the parsed call or ok=false.
+func matchDjangoURLCall(node *sitter.Node, src []byte) (djangoURLCall, bool) {
+	if node.Type() != "call" {
+		return djangoURLCall{}, false
+	}
+	fn := node.ChildByFieldName("function")
+	if fn == nil {
+		return djangoURLCall{}, false
+	}
+	funcName := djangoFuncName(fn, src)
+	if !djangoURLFuncs[funcName] {
+		return djangoURLCall{}, false
+	}
+	args := node.ChildByFieldName("arguments")
+	if args == nil {
+		return djangoURLCall{}, false
+	}
+	route := extractFirstStringArg(args, src)
+	if route == "" {
+		return djangoURLCall{}, false
+	}
+	return djangoURLCall{
+		funcName: funcName,
+		route:    route,
+		line:     int(node.StartPoint().Row) + 1,
+	}, true
+}
+
+// djangoFuncName returns the bare callee name for an identifier-form call
+// (path) or the right-hand side of an attribute-form call (urls.path).
+func djangoFuncName(fn *sitter.Node, src []byte) string {
+	switch fn.Type() {
+	case "identifier":
+		return fn.Content(src)
+	case "attribute":
+		if attr := fn.ChildByFieldName("attribute"); attr != nil {
+			return attr.Content(src)
+		}
+	}
+	return ""
+}
+
 // extractDjangoURLPatterns finds Django path()/re_path() calls in urls.py files.
 func extractDjangoURLPatterns(root *sitter.Node, src []byte, modID, filePath string) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
 	common.WalkTree(root, func(node *sitter.Node) {
-		if node.Type() != "call" {
+		call, ok := matchDjangoURLCall(node, src)
+		if !ok {
 			return
 		}
-
-		fn := node.ChildByFieldName("function")
-		if fn == nil {
-			return
-		}
-
-		// Match path() or re_path() calls
-		var funcName string
-		switch fn.Type() {
-		case "identifier":
-			funcName = fn.Content(src)
-		case "attribute":
-			attr := fn.ChildByFieldName("attribute")
-			if attr != nil {
-				funcName = attr.Content(src)
-			}
-		}
-		if !djangoURLFuncs[funcName] {
-			return
-		}
-
-		args := node.ChildByFieldName("arguments")
-		if args == nil {
-			return
-		}
-
-		routePath := extractFirstStringArg(args, src)
-		if routePath == "" {
-			return
-		}
-
-		line := int(node.StartPoint().Row) + 1
-		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), line)
-
+		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), call.line)
 		nodes = append(nodes, &model.Node{
 			ID:       endpointID,
-			Name:     fmt.Sprintf("URL %s", routePath),
+			Name:     fmt.Sprintf("URL %s", call.route),
 			Type:     model.NodeEndpoint,
 			Language: "python",
 			Path:     filePath,
 			Properties: map[string]string{
-				"method":    funcName,
-				"route":     routePath,
-				"line":      fmt.Sprintf("%d", line),
+				"method":    call.funcName,
+				"route":     call.route,
+				"line":      fmt.Sprintf("%d", call.line),
 				"framework": "django",
 			},
 		})
@@ -425,6 +463,57 @@ var httpClientObjects = map[string]bool{
 	"requests": true, "httpx": true, "session": true, "client": true,
 }
 
+// httpCall describes one matched outbound HTTP client call. Empty host means
+// the call did not match the recognized client/method/URL pattern.
+type httpCall struct {
+	host   string
+	method string
+	rawURL string
+	line   int
+}
+
+// matchHTTPClientCall recognizes a tree-sitter call node as an outbound HTTP
+// client invocation (requests.get, httpx.post, …) and returns the parsed call
+// or ok=false. Pulled out of extractHTTPCalls so the WalkTree callback reads
+// as a single dispatch.
+func matchHTTPClientCall(node *sitter.Node, src []byte) (httpCall, bool) {
+	if node.Type() != "call" {
+		return httpCall{}, false
+	}
+	fn := node.ChildByFieldName("function")
+	if fn == nil || fn.Type() != "attribute" {
+		return httpCall{}, false
+	}
+	obj := fn.ChildByFieldName("object")
+	attr := fn.ChildByFieldName("attribute")
+	if obj == nil || attr == nil {
+		return httpCall{}, false
+	}
+	objName := obj.Content(src)
+	methodName := strings.ToLower(attr.Content(src))
+	if !httpClientObjects[objName] || !httpMethods[methodName] {
+		return httpCall{}, false
+	}
+	args := node.ChildByFieldName("arguments")
+	if args == nil {
+		return httpCall{}, false
+	}
+	rawURL := extractFirstStringArg(args, src)
+	if rawURL == "" {
+		return httpCall{}, false
+	}
+	host, ok := common.ParseServiceFromURL(rawURL)
+	if !ok {
+		return httpCall{}, false
+	}
+	return httpCall{
+		host:   host,
+		method: methodName,
+		rawURL: rawURL,
+		line:   int(node.StartPoint().Row) + 1,
+	}, true
+}
+
 // extractHTTPCalls detects outbound HTTP calls (requests.get, httpx.post, etc.)
 // and creates service nodes for target hosts.
 func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Node, []*model.Edge) {
@@ -432,48 +521,14 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 	var edges []*model.Edge
 
 	common.WalkTree(root, func(node *sitter.Node) {
-		if node.Type() != "call" {
-			return
-		}
-
-		fn := node.ChildByFieldName("function")
-		if fn == nil || fn.Type() != "attribute" {
-			return
-		}
-
-		obj := fn.ChildByFieldName("object")
-		attr := fn.ChildByFieldName("attribute")
-		if obj == nil || attr == nil {
-			return
-		}
-
-		objName := obj.Content(src)
-		methodName := strings.ToLower(attr.Content(src))
-		if !httpClientObjects[objName] || !httpMethods[methodName] {
-			return
-		}
-
-		args := node.ChildByFieldName("arguments")
-		if args == nil {
-			return
-		}
-
-		rawURL := extractFirstStringArg(args, src)
-		if rawURL == "" {
-			return
-		}
-
-		host, ok := common.ParseServiceFromURL(rawURL)
+		call, ok := matchHTTPClientCall(node, src)
 		if !ok {
 			return
 		}
-
-		serviceID := "service:" + host
-		line := int(node.StartPoint().Row) + 1
-
+		serviceID := "service:" + call.host
 		nodes = append(nodes, &model.Node{
 			ID:   serviceID,
-			Name: host,
+			Name: call.host,
 			Type: model.NodeExternalAPI,
 			Properties: map[string]string{
 				"detected_via": "http_call",
@@ -483,11 +538,11 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 			Source:     modID,
 			Target:     serviceID,
 			Type:       model.EdgeAPICall,
-			Label:      strings.ToUpper(methodName) + " " + rawURL,
+			Label:      strings.ToUpper(call.method) + " " + call.rawURL,
 			Confidence: 0.7,
 			Properties: map[string]string{
-				"url":  rawURL,
-				"line": fmt.Sprintf("%d", line),
+				"url":  call.rawURL,
+				"line": fmt.Sprintf("%d", call.line),
 			},
 		})
 	})

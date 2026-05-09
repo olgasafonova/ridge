@@ -37,37 +37,15 @@ func ValidateScanPath(path string) error {
 		return fmt.Errorf("resolving path: %w", err)
 	}
 
-	resolved, err := filepath.EvalSymlinks(absPath)
-	if err != nil {
-		// If EvalSymlinks fails, the path likely doesn't exist — check below
-		resolved = absPath
+	pathsToCheck := bothPaths(absPath)
+
+	if hit := matchSensitiveRoot(pathsToCheck); hit != "" {
+		return fmt.Errorf("scanning %s is not allowed", hit)
+	}
+	if hit := matchSensitiveDotDir(pathsToCheck); hit != "" {
+		return fmt.Errorf("scanning %s is not allowed", hit)
 	}
 
-	// Check both original and resolved paths against sensitive locations
-	pathsToCheck := []string{absPath, resolved}
-
-	for _, p := range pathsToCheck {
-		for _, root := range sensitiveRoots {
-			if p == root || strings.HasPrefix(p, root+"/") {
-				return fmt.Errorf("scanning %s is not allowed", root)
-			}
-		}
-	}
-
-	// Check sensitive home dotfiles
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		for _, p := range pathsToCheck {
-			for _, dotDir := range sensitiveDotDirs {
-				sensitive := filepath.Join(home, dotDir)
-				if p == sensitive || strings.HasPrefix(p, sensitive+"/") {
-					return fmt.Errorf("scanning %s is not allowed", sensitive)
-				}
-			}
-		}
-	}
-
-	// Path must exist and be a directory
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return fmt.Errorf("path does not exist: %w", err)
@@ -77,6 +55,55 @@ func ValidateScanPath(path string) error {
 	}
 
 	return nil
+}
+
+// bothPaths returns absPath plus its symlink-resolved form so sensitivity
+// checks see what the kernel will actually open. EvalSymlinks failure is
+// non-fatal here because non-existent paths fail more clearly at the later
+// os.Stat check.
+func bothPaths(absPath string) []string {
+	resolved, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		return []string{absPath}
+	}
+	return []string{absPath, resolved}
+}
+
+// matchSensitiveRoot returns the first sensitiveRoots entry that any of paths
+// resides at or under, or "" if none.
+func matchSensitiveRoot(paths []string) string {
+	for _, p := range paths {
+		for _, root := range sensitiveRoots {
+			if pathIsAtOrUnder(p, root) {
+				return root
+			}
+		}
+	}
+	return ""
+}
+
+// matchSensitiveDotDir returns the absolute path of the first $HOME/<dotdir>
+// entry that any of paths resides at or under, or "" if none / no $HOME.
+func matchSensitiveDotDir(paths []string) string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return ""
+	}
+	for _, p := range paths {
+		for _, dotDir := range sensitiveDotDirs {
+			sensitive := filepath.Join(home, dotDir)
+			if pathIsAtOrUnder(p, sensitive) {
+				return sensitive
+			}
+		}
+	}
+	return ""
+}
+
+// pathIsAtOrUnder reports whether p equals root or sits inside it (with a
+// trailing separator to defeat sibling-prefix tricks like "/etc-evil").
+func pathIsAtOrUnder(p, root string) bool {
+	return p == root || strings.HasPrefix(p, root+string(filepath.Separator))
 }
 
 // ValidateOutputPath checks that a file path resolves to within baseDir.
@@ -131,10 +158,8 @@ func ValidateOutputPath(filePath, baseDir string) error {
 
 	// Defense in depth: also reject writes to sensitive roots even if
 	// baseDir overlapped them.
-	for _, root := range sensitiveRoots {
-		if resolvedFile == root || strings.HasPrefix(resolvedFile, root+string(filepath.Separator)) {
-			return fmt.Errorf("writing to %s is not allowed", root)
-		}
+	if hit := matchSensitiveRoot([]string{resolvedFile}); hit != "" {
+		return fmt.Errorf("writing to %s is not allowed", hit)
 	}
 
 	return nil
