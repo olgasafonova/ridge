@@ -54,22 +54,33 @@ func confidenceFor(e *Edge) float64 {
 	return conf
 }
 
+// relPath is a path relative to the project root. Distinct from a generic
+// string so the resolver's signatures don't read as primitive-obsessed.
+type relPath string
+
+// rootPrefix is the absolute path prefix that newTargetResolver strips off
+// node paths to derive their relPath.
+type rootPrefix string
+
 // targetResolver maps edge targets with "import:" / "wikilink:" prefixes
 // to concrete node IDs by matching against node Path suffixes.
 type targetResolver struct {
 	refs          []pathRef
-	importCache   map[string]string // "" = unresolvable
-	wikilinkCache map[string]string
+	importCache   map[relPath]string // "" = unresolvable
+	wikilinkCache map[relPath]string
 }
 
 type pathRef struct {
-	relPath string
-	id      string
+	rel relPath
+	id  string
 }
 
-func newTargetResolver(nodes map[string]*Node, rootPath string) *targetResolver {
-	prefix := pathPrefix(rootPath)
-	var refs []pathRef
+// matchFunc reports whether key resolves to ref.
+type matchFunc func(key relPath, ref pathRef) bool
+
+func newTargetResolver(nodes map[string]*Node, root string) *targetResolver {
+	prefix := newRootPrefix(root)
+	refs := make([]pathRef, 0, len(nodes))
 	for _, n := range nodes {
 		if ref, ok := nodeRef(n, prefix); ok {
 			refs = append(refs, ref)
@@ -77,43 +88,43 @@ func newTargetResolver(nodes map[string]*Node, rootPath string) *targetResolver 
 	}
 	return &targetResolver{
 		refs:          refs,
-		importCache:   make(map[string]string),
-		wikilinkCache: make(map[string]string),
+		importCache:   make(map[relPath]string),
+		wikilinkCache: make(map[relPath]string),
 	}
 }
 
-func pathPrefix(rootPath string) string {
-	if rootPath == "" {
+func newRootPrefix(root string) rootPrefix {
+	if root == "" {
 		return ""
 	}
-	return rootPath + "/"
+	return rootPrefix(root + "/")
 }
 
-func nodeRef(n *Node, prefix string) (pathRef, bool) {
+func nodeRef(n *Node, prefix rootPrefix) (pathRef, bool) {
 	if n.Path == "" {
 		return pathRef{}, false
 	}
-	relPath := n.Path
+	rel := n.Path
 	if prefix != "" {
-		if rel, ok := strings.CutPrefix(n.Path, prefix); ok {
-			relPath = rel
+		if stripped, ok := strings.CutPrefix(n.Path, string(prefix)); ok {
+			rel = stripped
 		}
 	}
-	return pathRef{relPath: relPath, id: n.ID}, true
+	return pathRef{rel: relPath(rel), id: n.ID}, true
 }
 
 // resolve returns (resolvedID, ok). Unprefixed targets pass through unchanged.
 func (r *targetResolver) resolve(target string) (string, bool) {
 	if path, ok := strings.CutPrefix(target, "import:"); ok {
-		return r.lookup(path, r.importCache, importMatches)
+		return r.lookup(relPath(path), r.importCache, importMatches)
 	}
 	if name, ok := strings.CutPrefix(target, "wikilink:"); ok {
-		return r.lookup(name, r.wikilinkCache, wikilinkMatches)
+		return r.lookup(relPath(name), r.wikilinkCache, wikilinkMatches)
 	}
 	return target, true
 }
 
-func (r *targetResolver) lookup(key string, cache map[string]string, match func(string, pathRef) bool) (string, bool) {
+func (r *targetResolver) lookup(key relPath, cache map[relPath]string, match matchFunc) (string, bool) {
 	if id, cached := cache[key]; cached {
 		return id, id != ""
 	}
@@ -127,16 +138,17 @@ func (r *targetResolver) lookup(key string, cache map[string]string, match func(
 	return "", false
 }
 
-func importMatches(importPath string, ref pathRef) bool {
-	return importPath == ref.relPath || strings.HasSuffix(importPath, "/"+ref.relPath)
+func importMatches(key relPath, ref pathRef) bool {
+	return key == ref.rel || strings.HasSuffix(string(key), "/"+string(ref.rel))
 }
 
-func wikilinkMatches(linkName string, ref pathRef) bool {
-	stem := strings.TrimSuffix(ref.relPath, ".md")
+func wikilinkMatches(key relPath, ref pathRef) bool {
+	stem := strings.TrimSuffix(string(ref.rel), ".md")
 	stem = strings.TrimSuffix(stem, ".markdown")
 	base := stem
 	if i := strings.LastIndex(stem, "/"); i >= 0 {
 		base = stem[i+1:]
 	}
-	return base == linkName || stem == linkName || strings.HasSuffix(stem, "/"+linkName)
+	target := string(key)
+	return base == target || stem == target || strings.HasSuffix(stem, "/"+target)
 }
