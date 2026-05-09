@@ -132,7 +132,12 @@ func (s *Scanner) ScanWithOptions(ctx context.Context, rootPath string, opts Sca
 	}
 
 	var stats ScanStats
-	files, walkSkipped, truncated, err := s.walkAndCollect(ctx, absRoot, mergedSkipDirs, skipGlobs, opts.MaxFiles)
+	files, walkSkipped, truncated, err := s.walkAndCollect(ctx, walkParams{
+		absRoot:   absRoot,
+		skipDirs:  mergedSkipDirs,
+		skipGlobs: skipGlobs,
+		maxFiles:  opts.MaxFiles,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("walking directory: %w", err)
 	}
@@ -145,7 +150,8 @@ func (s *Scanner) ScanWithOptions(ctx context.Context, rootPath string, opts Sca
 	mergeCachedResults(graph, cachedResults, &stats)
 
 	workers := chooseWorkers(opts.Workers, len(toAnalyze))
-	if analyzeTruncated := s.runAnalysis(ctx, toAnalyze, workers, state, graph, &stats, opts.MaxNodes); analyzeTruncated {
+	ac := &analyzeContext{state: state, graph: graph, stats: &stats, maxNodes: opts.MaxNodes}
+	if analyzeTruncated := s.runAnalysis(ctx, toAnalyze, workers, ac); analyzeTruncated {
 		truncated = true
 	}
 

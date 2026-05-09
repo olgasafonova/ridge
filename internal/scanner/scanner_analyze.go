@@ -8,6 +8,16 @@ import (
 	"github.com/olgasafonova/ridge/internal/model"
 )
 
+// analyzeContext bundles the mutable destinations and limit policy that every
+// analyzer-path function needs. Replaces a 6-7 argument list across runAnalysis
+// / analyzeSequential / analyzeParallel.
+type analyzeContext struct {
+	state    *ScanState
+	graph    *model.ArchGraph
+	stats    *ScanStats
+	maxNodes int
+}
+
 // cloneAnalyzers creates independent copies of all registered analyzers.
 func (s *Scanner) cloneAnalyzers() map[string]Analyzer {
 	cloned := make(map[string]Analyzer, len(s.analyzers))
@@ -35,19 +45,19 @@ func chooseWorkers(requested, queueSize int) int {
 
 // runAnalysis dispatches to either the sequential or parallel analyzer path.
 // Returns true if a limit was hit during analysis.
-func (s *Scanner) runAnalysis(ctx context.Context, toAnalyze []fileWork, workers int, state *ScanState, graph *model.ArchGraph, stats *ScanStats, maxNodes int) bool {
+func (s *Scanner) runAnalysis(ctx context.Context, toAnalyze []fileWork, workers int, ac *analyzeContext) bool {
 	switch {
 	case len(toAnalyze) == 0:
 		return false
 	case workers <= 1:
-		return s.analyzeSequential(ctx, toAnalyze, state, graph, stats, maxNodes)
+		return s.analyzeSequential(ctx, toAnalyze, ac)
 	default:
-		return s.analyzeParallel(ctx, toAnalyze, workers, state, graph, stats, maxNodes)
+		return s.analyzeParallel(ctx, toAnalyze, workers, ac)
 	}
 }
 
 // analyzeSequential runs analyzers on the calling goroutine. Used when workers <= 1.
-func (s *Scanner) analyzeSequential(ctx context.Context, toAnalyze []fileWork, state *ScanState, graph *model.ArchGraph, stats *ScanStats, maxNodes int) bool {
+func (s *Scanner) analyzeSequential(ctx context.Context, toAnalyze []fileWork, ac *analyzeContext) bool {
 	for _, f := range toAnalyze {
 		if ctx.Err() != nil {
 			return true
@@ -57,9 +67,9 @@ func (s *Scanner) analyzeSequential(ctx context.Context, toAnalyze []fileWork, s
 			s.logger.Warn("Analyzer error", "path", f.path, "error", err)
 			continue
 		}
-		stats.FilesAnalyzed++
-		s.maybeUpdateState(state, f.path, nodes, edges)
-		if mergeNodesAndEdges(graph, nodes, edges, stats, maxNodes) {
+		ac.stats.FilesAnalyzed++
+		s.maybeUpdateState(ac.state, f.path, nodes, edges)
+		if mergeNodesAndEdges(ac.graph, nodes, edges, ac.stats, ac.maxNodes) {
 			return true
 		}
 	}
@@ -68,7 +78,7 @@ func (s *Scanner) analyzeSequential(ctx context.Context, toAnalyze []fileWork, s
 
 // analyzeParallel fans out analyzer work across N goroutines, with a single
 // goroutine collecting results to keep graph mutation single-threaded.
-func (s *Scanner) analyzeParallel(ctx context.Context, toAnalyze []fileWork, workers int, state *ScanState, graph *model.ArchGraph, stats *ScanStats, maxNodes int) bool {
+func (s *Scanner) analyzeParallel(ctx context.Context, toAnalyze []fileWork, workers int, ac *analyzeContext) bool {
 	workCh := make(chan fileWork, len(toAnalyze))
 	resultCh := make(chan analyzeResult, len(toAnalyze))
 
@@ -88,9 +98,9 @@ func (s *Scanner) analyzeParallel(ctx context.Context, toAnalyze []fileWork, wor
 
 	truncated := false
 	for r := range resultCh {
-		stats.FilesAnalyzed++
-		s.maybeUpdateState(state, r.path, r.nodes, r.edges)
-		if !truncated && mergeNodesAndEdges(graph, r.nodes, r.edges, stats, maxNodes) {
+		ac.stats.FilesAnalyzed++
+		s.maybeUpdateState(ac.state, r.path, r.nodes, r.edges)
+		if !truncated && mergeNodesAndEdges(ac.graph, r.nodes, r.edges, ac.stats, ac.maxNodes) {
 			truncated = true
 			// keep draining resultCh so workers can finish; max-nodes bail-out
 			// must not deadlock
