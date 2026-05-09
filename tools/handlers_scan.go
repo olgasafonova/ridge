@@ -28,29 +28,14 @@ func (h *HandlerRegistry) cachedScan(ctx context.Context, path, alias string, op
 		absPath = path
 	}
 
-	optsKey := fmt.Sprintf("%d|%d|%d|%s|%s",
-		opts.MaxFiles, opts.MaxNodes, opts.Workers,
-		strings.Join(opts.SkipDirs, ","),
-		strings.Join(opts.SkipGlobs, ","),
-	)
-	key := infra.CacheKey(absPath, optsKey)
-
+	key := infra.CacheKey(absPath, scanOptsKey(opts))
 	if cached, ok := h.cache.Get(key); ok {
 		h.logger.Debug("Scan cache hit", "path", absPath)
 		return cached, nil
 	}
 
-	// Load persistent scan state when scanning via registry alias.
-	if alias != "" && h.repoRegistry != nil {
-		statePath := h.repoRegistry.StatePath(alias)
-		state, loadErr := infra.LoadJSON[scanner.ScanState](statePath)
-		if loadErr != nil {
-			if !os.IsNotExist(loadErr) {
-				h.logger.Warn("Failed to load scan state, starting fresh", "alias", alias, "error", loadErr)
-			}
-			state = scanner.NewScanState(absPath)
-		}
-		opts.State = state
+	if alias != "" {
+		opts.State = h.loadIncrementalState(alias, absPath)
 	}
 
 	result, err := h.scanner.ScanWithOptions(ctx, path, opts)
@@ -60,19 +45,54 @@ func (h *HandlerRegistry) cachedScan(ctx context.Context, path, alias string, op
 
 	h.cache.Put(key, result)
 
-	// Persist state and update registry when scanning via alias.
-	if alias != "" && h.repoRegistry != nil && result.State != nil {
-		statePath := h.repoRegistry.StatePath(alias)
-		if saveErr := infra.SaveJSON(statePath, result.State); saveErr != nil {
-			h.logger.Warn("Failed to save scan state", "alias", alias, "error", saveErr)
-		}
-		h.repoRegistry.UpdateScanInfo(alias, result.Graph.NodeCount(), result.Graph.EdgeCount(), string(result.Graph.Topology))
-		if saveErr := h.repoRegistry.Save(); saveErr != nil {
-			h.logger.Warn("Failed to save registry", "error", saveErr)
-		}
+	if alias != "" && result.State != nil {
+		h.persistIncrementalState(alias, result)
 	}
 
 	return result, err
+}
+
+// scanOptsKey builds a deterministic cache-key suffix from the limit and
+// skip-pattern fields of ScanOptions.
+func scanOptsKey(opts scanner.ScanOptions) string {
+	return fmt.Sprintf("%d|%d|%d|%s|%s",
+		opts.MaxFiles, opts.MaxNodes, opts.Workers,
+		strings.Join(opts.SkipDirs, ","),
+		strings.Join(opts.SkipGlobs, ","),
+	)
+}
+
+// loadIncrementalState reads persistent scan state for an alias, falling back
+// to a fresh state when none exists or loading fails.
+func (h *HandlerRegistry) loadIncrementalState(alias, absPath string) *scanner.ScanState {
+	if h.repoRegistry == nil {
+		return nil
+	}
+	statePath := h.repoRegistry.StatePath(alias)
+	state, loadErr := infra.LoadJSON[scanner.ScanState](statePath)
+	if loadErr != nil {
+		if !os.IsNotExist(loadErr) {
+			h.logger.Warn("Failed to load scan state, starting fresh", "alias", alias, "error", loadErr)
+		}
+		return scanner.NewScanState(absPath)
+	}
+	return state
+}
+
+// persistIncrementalState writes the post-scan state and refreshes the registry
+// row for the alias. Failures are logged but non-fatal.
+func (h *HandlerRegistry) persistIncrementalState(alias string, result *scanner.ScanResult) {
+	if h.repoRegistry == nil {
+		return
+	}
+	statePath := h.repoRegistry.StatePath(alias)
+	if saveErr := infra.SaveJSON(statePath, result.State); saveErr != nil {
+		h.logger.Warn("Failed to save scan state", "alias", alias, "error", saveErr)
+	}
+	h.repoRegistry.UpdateScanInfo(alias, result.Graph.NodeCount(), result.Graph.EdgeCount(), string(result.Graph.Topology))
+	if saveErr := h.repoRegistry.Save(); saveErr != nil {
+		h.logger.Warn("Failed to save registry", "error", saveErr)
+	}
 }
 
 // scanPath runs a cached scan and unwraps the graph.
@@ -187,20 +207,9 @@ func (h *HandlerRegistry) archScanMulti(ctx context.Context, args ArchScanArgs) 
 		if err != nil && !errors.Is(err, scanner.ErrLimitReached) {
 			return nil, fmt.Errorf("scanning %q: %w", p, err)
 		}
-		if result.Truncated {
-			truncated = true
-		}
-		totalStats.FilesAnalyzed += result.Stats.FilesAnalyzed
-		totalStats.FilesSkipped += result.Stats.FilesSkipped
-		totalStats.NodesFound += result.Stats.NodesFound
-		totalStats.EdgesFound += result.Stats.EdgesFound
-		totalStats.DurationMs += result.Stats.DurationMs
-
-		if merged == nil {
-			merged = result.Graph
-		} else {
-			merged.Merge(result.Graph)
-		}
+		truncated = truncated || result.Truncated
+		addScanStats(&totalStats, result.Stats)
+		merged = mergeOrAdopt(merged, result.Graph)
 	}
 
 	res := &ArchScanResult{
@@ -234,4 +243,23 @@ type ArchFocusArgs struct {
 
 func (h *HandlerRegistry) archFocus(ctx context.Context, args ArchFocusArgs) (*ArchScanResult, error) {
 	return h.archScan(ctx, ArchScanArgs{Path: args.Path, Repo: args.Repo, ScanControl: args.ScanControl})
+}
+
+// addScanStats accumulates a partial ScanStats into a running total.
+func addScanStats(total *scanner.ScanStats, partial scanner.ScanStats) {
+	total.FilesAnalyzed += partial.FilesAnalyzed
+	total.FilesSkipped += partial.FilesSkipped
+	total.NodesFound += partial.NodesFound
+	total.EdgesFound += partial.EdgesFound
+	total.DurationMs += partial.DurationMs
+}
+
+// mergeOrAdopt returns next when accumulator is nil, otherwise merges next into
+// accumulator and returns the merged graph.
+func mergeOrAdopt(accumulator, next *model.ArchGraph) *model.ArchGraph {
+	if accumulator == nil {
+		return next
+	}
+	accumulator.Merge(next)
+	return accumulator
 }

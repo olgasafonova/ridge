@@ -44,61 +44,87 @@ func (h *HandlerRegistry) archDependencies(ctx context.Context, args ArchDepende
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
-	modulePath := readModulePath(path)
-
-	var internal, external, infra []string
-	seen := make(map[string]bool)
-
-	for _, e := range graph.Edges() {
-		if e.Type != model.EdgeDependency {
-			continue
-		}
-		target := e.Label
-		if target == "" {
-			target = e.Target
-		}
-		if seen[target] {
-			continue
-		}
-		seen[target] = true
-
-		// Classify: internal (starts with module path), external, infra
-		node := graph.GetNode(e.Target)
-		if node != nil {
-			switch node.Type {
-			case model.NodeDatabase, model.NodeQueue, model.NodeCache:
-				infra = append(infra, target)
-				continue
-			}
-		}
-
-		if isStdlib(target, modulePath) {
-			continue // skip stdlib
-		}
-		external = append(external, target)
-	}
-
-	// Internal: package nodes
-	for _, n := range graph.NodesByType(model.NodePackage) {
-		internal = append(internal, n.Name)
-	}
-
-	// Ensure non-nil slices so JSON serializes as [] not null.
-	if internal == nil {
-		internal = []string{}
-	}
-	if external == nil {
-		external = []string{}
-	}
-	if infra == nil {
-		infra = []string{}
-	}
+	external, infra := collectExternalAndInfra(graph, readModulePath(path))
+	internal := collectInternal(graph)
 
 	return &ArchDependenciesResult{
-		Internal:       internal,
-		External:       external,
-		Infrastructure: infra,
+		Internal:       ensureSlice(internal),
+		External:       ensureSlice(external),
+		Infrastructure: ensureSlice(infra),
 	}, nil
+}
+
+// dependencyKind classifies a dependency edge into one of three buckets.
+type dependencyKind int
+
+const (
+	depSkip dependencyKind = iota
+	depExternal
+	depInfra
+)
+
+// classifyDependency returns the bucket for a single dependency edge plus the
+// label to record. depSkip means the edge contributes nothing (wrong type or
+// stdlib). Pulled out of archDependencies to flatten the loop body.
+func classifyDependency(e *model.Edge, graph *model.ArchGraph, modulePath string) (string, dependencyKind) {
+	if e.Type != model.EdgeDependency {
+		return "", depSkip
+	}
+	target := e.Label
+	if target == "" {
+		target = e.Target
+	}
+
+	if node := graph.GetNode(e.Target); node != nil {
+		switch node.Type {
+		case model.NodeDatabase, model.NodeQueue, model.NodeCache:
+			return target, depInfra
+		}
+	}
+
+	if isStdlib(target, modulePath) {
+		return "", depSkip
+	}
+	return target, depExternal
+}
+
+// collectExternalAndInfra walks dependency edges once, deduplicating by label
+// and bucketing into external vs infrastructure.
+func collectExternalAndInfra(graph *model.ArchGraph, modulePath string) (external, infra []string) {
+	seen := make(map[string]bool)
+	for _, e := range graph.Edges() {
+		label, kind := classifyDependency(e, graph, modulePath)
+		if kind == depSkip || seen[label] {
+			continue
+		}
+		seen[label] = true
+		switch kind {
+		case depInfra:
+			infra = append(infra, label)
+		case depExternal:
+			external = append(external, label)
+		}
+	}
+	return external, infra
+}
+
+// collectInternal returns the names of all package nodes in the graph.
+func collectInternal(graph *model.ArchGraph) []string {
+	pkgs := graph.NodesByType(model.NodePackage)
+	out := make([]string, 0, len(pkgs))
+	for _, n := range pkgs {
+		out = append(out, n.Name)
+	}
+	return out
+}
+
+// ensureSlice replaces a nil string slice with an empty one so JSON serializes
+// as [] instead of null. Used by handlers that expose categorized result lists.
+func ensureSlice(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // =============================================================================

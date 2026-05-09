@@ -106,53 +106,13 @@ func (h *HandlerRegistry) archHistory(ctx context.Context, args ArchHistoryArgs)
 		return nil, fmt.Errorf("getting git history: %w", err)
 	}
 
-	// Phase 1: Parallel scan — each goroutine writes only to its own index.
-	results := make([]scanResult, len(commits))
-	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(4) // cap concurrent git worktrees
-
-	for idx, c := range commits {
-		results[idx].entry = drift.HistoryEntry{
-			Ref:     c.Hash[:8],
-			Date:    c.Date,
-			Message: c.Message,
-		}
-		g.Go(func() error {
-			worktree, cleanup, wErr := drift.CheckoutRef(gctx, path, c.Hash)
-			if wErr != nil {
-				return nil // non-fatal: entry stays with zero counts
-			}
-			graph, scanErr := h.scanner.Scan(worktree)
-			cleanup()
-			if scanErr != nil {
-				return nil // non-fatal
-			}
-			results[idx].graph = graph
-			results[idx].entry.NodeCount = graph.NodeCount()
-			results[idx].entry.EdgeCount = graph.EdgeCount()
-			results[idx].entry.Topology = string(graph.Topology)
-			return nil
-		})
-	}
-	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("scanning commits: %w", err)
+	results, err := h.scanCommitsParallel(ctx, path, commits)
+	if err != nil {
+		return nil, err
 	}
 
-	// Phase 2: Sequential comparison (oldest-first).
-	// commits[0] is most recent; walk from end to start.
-	var prevGraph *model.ArchGraph
-	for i := len(results) - 1; i >= 0; i-- {
-		r := &results[i]
-		if r.graph != nil && prevGraph != nil {
-			report := drift.Compare(prevGraph, r.graph)
-			r.entry.ChangesFromPrevious = len(report.Changes)
-		}
-		if r.graph != nil {
-			prevGraph = r.graph
-		}
-	}
+	annotateChangesFromPrev(results)
 
-	// Collect entries in most-recent-first order (same order as commits).
 	entries := make([]drift.HistoryEntry, len(results))
 	for i, r := range results {
 		entries[i] = r.entry
@@ -162,4 +122,67 @@ func (h *HandlerRegistry) archHistory(ctx context.Context, args ArchHistoryArgs)
 		Entries: entries,
 		Summary: fmt.Sprintf("Analyzed %d commits", len(entries)),
 	}, nil
+}
+
+// scanCommitsParallel checks out each commit in its own worktree and scans it,
+// up to 4 concurrently. Each goroutine writes to its own slot, so no locking
+// is needed. Per-commit scan failures are non-fatal: the entry survives with
+// zero counts.
+func (h *HandlerRegistry) scanCommitsParallel(ctx context.Context, path string, commits []drift.GitLogEntry) ([]scanResult, error) {
+	results := make([]scanResult, len(commits))
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(4)
+
+	for idx, c := range commits {
+		results[idx].entry = drift.HistoryEntry{
+			Ref:     c.Hash[:8],
+			Date:    c.Date,
+			Message: c.Message,
+		}
+		g.Go(func() error {
+			h.scanCommitInto(gctx, path, c.Hash, &results[idx])
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("scanning commits: %w", err)
+	}
+	return results, nil
+}
+
+// scanCommitInto checks out a single commit and populates the result's graph
+// and entry counts. Errors are silently swallowed so one bad commit doesn't
+// abort the whole history scan.
+func (h *HandlerRegistry) scanCommitInto(ctx context.Context, path, hash string, r *scanResult) {
+	worktree, cleanup, wErr := drift.CheckoutRef(ctx, path, hash)
+	if wErr != nil {
+		return
+	}
+	defer cleanup()
+	graph, scanErr := h.scanner.Scan(worktree)
+	if scanErr != nil {
+		return
+	}
+	r.graph = graph
+	r.entry.NodeCount = graph.NodeCount()
+	r.entry.EdgeCount = graph.EdgeCount()
+	r.entry.Topology = string(graph.Topology)
+}
+
+// annotateChangesFromPrev walks results oldest-first and records the number of
+// drift changes between each commit and the prior one that scanned successfully.
+// commits arrive most-recent-first, so iteration goes end → start.
+func annotateChangesFromPrev(results []scanResult) {
+	var prevGraph *model.ArchGraph
+	for i := len(results) - 1; i >= 0; i-- {
+		r := &results[i]
+		if r.graph == nil {
+			continue
+		}
+		if prevGraph != nil {
+			report := drift.Compare(prevGraph, r.graph)
+			r.entry.ChangesFromPrevious = len(report.Changes)
+		}
+		prevGraph = r.graph
+	}
 }
