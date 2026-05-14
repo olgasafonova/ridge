@@ -215,6 +215,16 @@ Or run from source:
 }
 ```
 
+### Optional: install the bundled Claude Code skill
+
+`skills/ridge/SKILL.md` teaches an agent which of the 19 ridge tools to call for a given question (blast radius vs scan vs drift vs validate). Drop it into your Claude Code skills directory once and the model stops guessing.
+
+```bash
+cp -r skills/ridge ~/.claude/skills/
+```
+
+The skill is plain markdown with a tool-decision matrix and worked examples. Read it directly if you want the same map in your head.
+
 ## Scan control
 
 All scan tools accept optional parameters for handling large codebases:
