@@ -103,10 +103,15 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	edges = append(edges, importEdges...)
 
 	// Detect framework from imports before extracting routes
-	framework := detectFramework(root, src)
+	rc := routeContext{
+		src:       src,
+		modID:     modID,
+		filePath:  path,
+		framework: detectFramework(root, src),
+	}
 
 	// Extract route handlers (Flask/FastAPI decorators)
-	routeNodes, routeEdges := extractRoutes(root, src, modID, path, framework)
+	routeNodes, routeEdges := extractRoutes(root, rc)
 	nodes = append(nodes, routeNodes...)
 	edges = append(edges, routeEdges...)
 
@@ -254,7 +259,7 @@ func detectFramework(root *sitter.Node, src []byte) string {
 }
 
 // routeContext bundles the per-file inputs that route extraction needs so
-// extractRoutes can stay below the function-arg threshold and the inner
+// the function signature stays below the Go arg threshold and the inner
 // callback can read as a single delegation.
 type routeContext struct {
 	src       []byte
@@ -264,8 +269,7 @@ type routeContext struct {
 }
 
 // extractRoutes finds Flask/FastAPI route decorators.
-func extractRoutes(root *sitter.Node, src []byte, modID, filePath, framework string) ([]*model.Node, []*model.Edge) {
-	rc := routeContext{src: src, modID: modID, filePath: filePath, framework: framework}
+func extractRoutes(root *sitter.Node, rc routeContext) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
@@ -495,33 +499,49 @@ type httpCall struct {
 	line   int
 }
 
+// httpClientCallSyntax holds the parsed shape of a "<receiver>.<method>(<args>)"
+// invocation. Both inner nodes are non-nil on a match.
+type httpClientCallSyntax struct {
+	args   *sitter.Node
+	method string
+}
+
+// parseHTTPClientCallSyntax recognizes a call node as `<obj>.<method>(...)`
+// where obj is a known HTTP client receiver and method is an HTTP verb.
+func parseHTTPClientCallSyntax(node *sitter.Node, src []byte) (httpClientCallSyntax, bool) {
+	if node.Type() != "call" {
+		return httpClientCallSyntax{}, false
+	}
+	fn := node.ChildByFieldName("function")
+	if fn == nil || fn.Type() != "attribute" {
+		return httpClientCallSyntax{}, false
+	}
+	obj := fn.ChildByFieldName("object")
+	attr := fn.ChildByFieldName("attribute")
+	if obj == nil || attr == nil {
+		return httpClientCallSyntax{}, false
+	}
+	methodName := strings.ToLower(attr.Content(src))
+	if !httpClientObjects[obj.Content(src)] || !httpMethods[methodName] {
+		return httpClientCallSyntax{}, false
+	}
+	args := node.ChildByFieldName("arguments")
+	if args == nil {
+		return httpClientCallSyntax{}, false
+	}
+	return httpClientCallSyntax{args: args, method: methodName}, true
+}
+
 // matchHTTPClientCall recognizes a tree-sitter call node as an outbound HTTP
 // client invocation (requests.get, httpx.post, …) and returns the parsed call
 // or ok=false. Pulled out of extractHTTPCalls so the WalkTree callback reads
 // as a single dispatch.
 func matchHTTPClientCall(node *sitter.Node, src []byte) (httpCall, bool) {
-	if node.Type() != "call" {
+	syntax, ok := parseHTTPClientCallSyntax(node, src)
+	if !ok {
 		return httpCall{}, false
 	}
-	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Type() != "attribute" {
-		return httpCall{}, false
-	}
-	obj := fn.ChildByFieldName("object")
-	attr := fn.ChildByFieldName("attribute")
-	if obj == nil || attr == nil {
-		return httpCall{}, false
-	}
-	objName := obj.Content(src)
-	methodName := strings.ToLower(attr.Content(src))
-	if !httpClientObjects[objName] || !httpMethods[methodName] {
-		return httpCall{}, false
-	}
-	args := node.ChildByFieldName("arguments")
-	if args == nil {
-		return httpCall{}, false
-	}
-	rawURL := extractFirstStringArg(args, src)
+	rawURL := extractFirstStringArg(syntax.args, src)
 	if rawURL == "" {
 		return httpCall{}, false
 	}
@@ -531,7 +551,7 @@ func matchHTTPClientCall(node *sitter.Node, src []byte) (httpCall, bool) {
 	}
 	return httpCall{
 		host:   host,
-		method: methodName,
+		method: syntax.method,
 		rawURL: rawURL,
 		line:   int(node.StartPoint().Row) + 1,
 	}, true

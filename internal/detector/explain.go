@@ -64,126 +64,170 @@ func collectMarkers(boundaries *BoundaryResult) []string {
 
 func detectPatterns(graph *model.ArchGraph) []string {
 	var patterns []string
+	patterns = appendIfNonEmpty(patterns, databasePattern(graph))
+	patterns = appendIfNonEmpty(patterns, queuePattern(graph))
+	patterns = appendIfNonEmpty(patterns, apiCallPattern(graph))
+	patterns = appendIfNonEmpty(patterns, cachePattern(graph))
+	patterns = appendIfNonEmpty(patterns, endpointPattern(graph))
 
-	services := graph.NodesByType(model.NodeService)
-	modules := graph.NodesByType(model.NodeModule)
-	databases := graph.NodesByType(model.NodeDatabase)
-	queues := graph.NodesByType(model.NodeQueue)
-	caches := graph.NodesByType(model.NodeCache)
-	endpoints := graph.NodesByType(model.NodeEndpoint)
-
-	serviceCount := len(services) + len(modules)
-
-	// Database patterns
-	if len(databases) == 1 && serviceCount > 1 {
-		patterns = append(patterns, "Shared database: multiple services reference a single data store")
-	} else if len(databases) > 1 && serviceCount > 1 {
-		patterns = append(patterns, "Database-per-service: multiple data stores detected alongside multiple services")
+	if len(patterns) == 0 {
+		patterns = append(patterns, "No distinctive architectural patterns detected")
 	}
+	return patterns
+}
 
-	// Communication patterns
-	if len(queues) > 0 {
-		patterns = append(patterns, "Event-driven communication: message queue infrastructure detected")
+func appendIfNonEmpty(patterns []string, p string) []string {
+	if p == "" {
+		return patterns
 	}
+	return append(patterns, p)
+}
 
+func databasePattern(graph *model.ArchGraph) string {
+	dbCount := len(graph.NodesByType(model.NodeDatabase))
+	serviceCount := len(graph.NodesByType(model.NodeService)) + len(graph.NodesByType(model.NodeModule))
+	if serviceCount <= 1 {
+		return ""
+	}
+	switch {
+	case dbCount == 1:
+		return "Shared database: multiple services reference a single data store"
+	case dbCount > 1:
+		return "Database-per-service: multiple data stores detected alongside multiple services"
+	}
+	return ""
+}
+
+func queuePattern(graph *model.ArchGraph) string {
+	if len(graph.NodesByType(model.NodeQueue)) == 0 {
+		return ""
+	}
+	return "Event-driven communication: message queue infrastructure detected"
+}
+
+func apiCallPattern(graph *model.ArchGraph) string {
 	apiCallCount := 0
 	for _, e := range graph.Edges() {
 		if e.Type == model.EdgeAPICall && e.Label != "serves" {
 			apiCallCount++
 		}
 	}
-	if apiCallCount > 0 {
-		patterns = append(patterns, fmt.Sprintf("Synchronous inter-service communication: %d API call edges detected", apiCallCount))
+	if apiCallCount == 0 {
+		return ""
 	}
+	return fmt.Sprintf("Synchronous inter-service communication: %d API call edges detected", apiCallCount)
+}
 
-	// Caching
-	if len(caches) > 0 {
-		patterns = append(patterns, "Caching layer detected")
+func cachePattern(graph *model.ArchGraph) string {
+	if len(graph.NodesByType(model.NodeCache)) == 0 {
+		return ""
 	}
+	return "Caching layer detected"
+}
 
-	// Endpoint density
-	if len(endpoints) > 0 {
-		patterns = append(patterns, fmt.Sprintf("HTTP API surface: %d endpoints detected", len(endpoints)))
+func endpointPattern(graph *model.ArchGraph) string {
+	endpoints := graph.NodesByType(model.NodeEndpoint)
+	if len(endpoints) == 0 {
+		return ""
 	}
-
-	if len(patterns) == 0 {
-		patterns = append(patterns, "No distinctive architectural patterns detected")
-	}
-
-	return patterns
+	return fmt.Sprintf("HTTP API surface: %d endpoints detected", len(endpoints))
 }
 
 func extractDecisions(graph *model.ArchGraph) []string {
+	decisions := infraDecisions(graph)
+	if d := languageMixDecision(graph); d != "" {
+		decisions = append(decisions, d)
+	}
+	return decisions
+}
+
+func infraDecisions(graph *model.ArchGraph) []string {
 	var decisions []string
-
-	// Extract infrastructure choices from node properties
 	for _, n := range graph.Nodes() {
-		detectedVia, ok := n.Properties["detected_via"]
-		if !ok {
-			continue
-		}
-
-		switch n.Type {
-		case model.NodeDatabase:
-			decisions = append(decisions, fmt.Sprintf("Uses %s for data persistence (detected via %s import)", n.Name, detectedVia))
-		case model.NodeQueue:
-			decisions = append(decisions, fmt.Sprintf("Uses %s for messaging (detected via %s import)", n.Name, detectedVia))
-		case model.NodeCache:
-			decisions = append(decisions, fmt.Sprintf("Uses %s for caching (detected via %s import)", n.Name, detectedVia))
-		case model.NodeExternalAPI:
-			decisions = append(decisions, fmt.Sprintf("Calls external APIs (detected via %s import)", detectedVia))
+		if d, ok := infraDecisionFor(n); ok {
+			decisions = append(decisions, d)
 		}
 	}
+	return decisions
+}
 
-	// Language mix
+func infraDecisionFor(n *model.Node) (string, bool) {
+	detectedVia, ok := n.Properties["detected_via"]
+	if !ok {
+		return "", false
+	}
+	switch n.Type {
+	case model.NodeDatabase:
+		return fmt.Sprintf("Uses %s for data persistence (detected via %s import)", n.Name, detectedVia), true
+	case model.NodeQueue:
+		return fmt.Sprintf("Uses %s for messaging (detected via %s import)", n.Name, detectedVia), true
+	case model.NodeCache:
+		return fmt.Sprintf("Uses %s for caching (detected via %s import)", n.Name, detectedVia), true
+	case model.NodeExternalAPI:
+		return fmt.Sprintf("Calls external APIs (detected via %s import)", detectedVia), true
+	}
+	return "", false
+}
+
+func languageMixDecision(graph *model.ArchGraph) string {
 	languages := make(map[string]int)
 	for _, n := range graph.Nodes() {
 		if n.Language != "" {
 			languages[n.Language]++
 		}
 	}
-	if len(languages) > 1 {
+	switch len(languages) {
+	case 0:
+		return ""
+	case 1:
+		for lang := range languages {
+			return fmt.Sprintf("Single-language codebase: %s", lang)
+		}
+		return ""
+	default:
 		var langParts []string
 		for lang, count := range languages {
 			langParts = append(langParts, fmt.Sprintf("%s (%d components)", lang, count))
 		}
-		decisions = append(decisions, fmt.Sprintf("Multi-language codebase: %s", strings.Join(langParts, ", ")))
-	} else if len(languages) == 1 {
-		for lang := range languages {
-			decisions = append(decisions, fmt.Sprintf("Single-language codebase: %s", lang))
-		}
+		return fmt.Sprintf("Multi-language codebase: %s", strings.Join(langParts, ", "))
 	}
-
-	return decisions
 }
 
 func identifyRisks(graph *model.ArchGraph) []string {
 	var risks []string
+	risks = appendIfNonEmpty(risks, sharedDatabaseRisk(graph))
+	risks = appendIfNonEmpty(risks, missingCacheRisk(graph))
+	risks = appendIfNonEmpty(risks, cycleRisk(graph))
+	risks = appendIfNonEmpty(risks, orphanRisk(graph))
+	return risks
+}
 
-	services := graph.NodesByType(model.NodeService)
-	modules := graph.NodesByType(model.NodeModule)
-	databases := graph.NodesByType(model.NodeDatabase)
-	caches := graph.NodesByType(model.NodeCache)
+func sharedDatabaseRisk(graph *model.ArchGraph) string {
+	dbCount := len(graph.NodesByType(model.NodeDatabase))
+	serviceCount := len(graph.NodesByType(model.NodeService)) + len(graph.NodesByType(model.NodeModule))
+	if dbCount == 1 && serviceCount > 2 {
+		return "Single database shared by multiple services may create coupling and scaling bottlenecks"
+	}
+	return ""
+}
+
+func missingCacheRisk(graph *model.ArchGraph) string {
 	endpoints := graph.NodesByType(model.NodeEndpoint)
-
-	serviceCount := len(services) + len(modules)
-
-	// Shared database risk
-	if len(databases) == 1 && serviceCount > 2 {
-		risks = append(risks, "Single database shared by multiple services may create coupling and scaling bottlenecks")
-	}
-
-	// Missing cache
+	caches := graph.NodesByType(model.NodeCache)
 	if len(endpoints) > 5 && len(caches) == 0 {
-		risks = append(risks, "No caching layer detected despite multiple endpoints; may impact performance under load")
+		return "No caching layer detected despite multiple endpoints; may impact performance under load"
 	}
+	return ""
+}
 
-	// Circular dependencies
+func cycleRisk(graph *model.ArchGraph) string {
 	if graph.HasCycle() {
-		risks = append(risks, "Circular dependencies detected; may cause build issues and unclear ownership")
+		return "Circular dependencies detected; may cause build issues and unclear ownership"
 	}
+	return ""
+}
 
-	// Orphan detection
+func orphanRisk(graph *model.ArchGraph) string {
 	edgeNodes := make(map[string]bool)
 	for _, e := range graph.Edges() {
 		edgeNodes[e.Source] = true
@@ -195,9 +239,8 @@ func identifyRisks(graph *model.ArchGraph) []string {
 			orphanCount++
 		}
 	}
-	if orphanCount > 0 {
-		risks = append(risks, fmt.Sprintf("%d disconnected nodes detected; may indicate dead code or missing integrations", orphanCount))
+	if orphanCount == 0 {
+		return ""
 	}
-
-	return risks
+	return fmt.Sprintf("%d disconnected nodes detected; may indicate dead code or missing integrations", orphanCount)
 }

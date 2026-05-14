@@ -89,7 +89,12 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	}
 
 	// Detect web framework from imports
-	framework := detectFramework(file)
+	cc := callContext{
+		pkgID:     pkgID,
+		filePath:  path,
+		fset:      fset,
+		framework: detectFramework(file),
+	}
 
 	// Walk AST for endpoint, infrastructure, and HTTP client call patterns
 	ast.Inspect(file, func(n ast.Node) bool {
@@ -98,7 +103,7 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 			return true
 		}
 
-		newNodes, newEdges := a.analyzeCall(call, pkgID, path, fset, framework)
+		newNodes, newEdges := a.analyzeCall(call, cc)
 		nodes = append(nodes, newNodes...)
 		edges = append(edges, newEdges...)
 
@@ -214,79 +219,112 @@ var frameworkImports = map[string]string{
 }
 
 // detectFramework checks imports to determine the web framework in use.
+// A concrete framework (gin, echo, ...) beats the stdlib fallback even when
+// both appear in the same file.
 func detectFramework(file *ast.File) string {
+	hasStdlib := false
 	for _, imp := range file.Imports {
 		importPath := strings.Trim(imp.Path.Value, `"`)
-		if fw, ok := frameworkImports[importPath]; ok && fw != "stdlib" {
-			return fw
+		fw, ok := frameworkImports[importPath]
+		if !ok {
+			continue
 		}
+		if fw == "stdlib" {
+			hasStdlib = true
+			continue
+		}
+		return fw
 	}
-	// Check if net/http is imported (stdlib fallback)
-	for _, imp := range file.Imports {
-		importPath := strings.Trim(imp.Path.Value, `"`)
-		if importPath == "net/http" {
-			return "stdlib"
-		}
+	if hasStdlib {
+		return "stdlib"
 	}
 	return "unknown"
 }
 
+// callContext bundles the per-file inputs the call analyzer needs so the
+// function signature stays under the Go arg threshold.
+type callContext struct {
+	pkgID     string
+	filePath  string
+	fset      *token.FileSet
+	framework string
+}
+
+// alwaysHTTPRouteFuncs are call expressions that always indicate an HTTP
+// handler registration (e.g. mux.HandleFunc("/x", ...)).
+var alwaysHTTPRouteFuncs = map[string]bool{
+	"HandleFunc": true, "Handle": true,
+	"Group": true, "Route": true,
+}
+
+// ambiguousHTTPRouteFuncs are method names that may indicate an HTTP route
+// registration (e.g. r.Get("/x", ...)) but also match unrelated calls. The
+// first argument must look like a path ("/...") for the call to count.
+var ambiguousHTTPRouteFuncs = map[string]bool{
+	"Get": true, "Post": true, "Put": true, "Delete": true, "Patch": true,
+	"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
+}
+
 // analyzeCall inspects function call expressions for endpoint patterns.
-func (a *Analyzer) analyzeCall(call *ast.CallExpr, pkgID, filePath string, fset *token.FileSet, framework string) ([]*model.Node, []*model.Edge) {
-	var nodes []*model.Node
-	var edges []*model.Edge
+func (a *Analyzer) analyzeCall(call *ast.CallExpr, cc callContext) ([]*model.Node, []*model.Edge) {
+	if node, edge, ok := matchHTTPRouteRegistration(call, cc); ok {
+		return []*model.Node{node}, []*model.Edge{edge}
+	}
+	return nil, nil
+}
 
+// matchHTTPRouteRegistration recognizes an HTTP handler registration like
+// mux.HandleFunc("/x", h) or r.Get("/x", h) and returns the endpoint
+// node/edge plus ok=true on a match.
+func matchHTTPRouteRegistration(call *ast.CallExpr, cc callContext) (*model.Node, *model.Edge, bool) {
 	funcName := callFuncName(call)
-	if funcName == "" {
-		return nodes, edges
+	if !isHTTPRouteFunc(funcName) || len(call.Args) < 1 {
+		return nil, nil, false
 	}
-
-	// Detect HTTP handler registrations
-	// "Always HTTP" methods don't need route validation; ambiguous names (Get, Put, etc.)
-	// require the first argument to look like a route path (starts with "/").
-	alwaysHTTP := map[string]bool{
-		"HandleFunc": true, "Handle": true,
-		"Group": true, "Route": true,
+	route, ok := stringArgValue(call.Args[0])
+	if !ok {
+		return nil, nil, false
 	}
-	ambiguousHTTP := map[string]bool{
-		"Get": true, "Post": true, "Put": true, "Delete": true, "Patch": true,
-		"GET": true, "POST": true, "PUT": true, "DELETE": true, "PATCH": true,
+	if ambiguousHTTPRouteFuncs[funcName] && !strings.HasPrefix(route, "/") {
+		return nil, nil, false
 	}
-
-	if (alwaysHTTP[funcName] || ambiguousHTTP[funcName]) && len(call.Args) >= 1 {
-		if lit, ok := call.Args[0].(*ast.BasicLit); ok && lit.Kind == token.STRING {
-			route := strings.Trim(lit.Value, `"`)
-			// For ambiguous methods, only match if the argument looks like a route path
-			if ambiguousHTTP[funcName] && !strings.HasPrefix(route, "/") {
-				return nodes, edges
-			}
-			pos := fset.Position(call.Pos())
-			endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), pos.Line)
-
-			nodes = append(nodes, &model.Node{
-				ID:       endpointID,
-				Name:     fmt.Sprintf("%s %s", strings.ToUpper(funcName), route),
-				Type:     model.NodeEndpoint,
-				Language: "go",
-				Path:     filePath,
-				Properties: map[string]string{
-					"method":    funcName,
-					"route":     route,
-					"line":      fmt.Sprintf("%d", pos.Line),
-					"framework": framework,
-				},
-			})
-			edges = append(edges, &model.Edge{
-				Source:     pkgID,
-				Target:     endpointID,
-				Type:       model.EdgeAPICall,
-				Label:      "serves",
-				Confidence: 0.85,
-			})
-		}
+	pos := cc.fset.Position(call.Pos())
+	endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(cc.filePath), pos.Line)
+	node := &model.Node{
+		ID:       endpointID,
+		Name:     fmt.Sprintf("%s %s", strings.ToUpper(funcName), route),
+		Type:     model.NodeEndpoint,
+		Language: "go",
+		Path:     cc.filePath,
+		Properties: map[string]string{
+			"method":    funcName,
+			"route":     route,
+			"line":      fmt.Sprintf("%d", pos.Line),
+			"framework": cc.framework,
+		},
 	}
+	edge := &model.Edge{
+		Source:     cc.pkgID,
+		Target:     endpointID,
+		Type:       model.EdgeAPICall,
+		Label:      "serves",
+		Confidence: 0.85,
+	}
+	return node, edge, true
+}
 
-	return nodes, edges
+// isHTTPRouteFunc reports whether the call name might register an HTTP route.
+func isHTTPRouteFunc(funcName string) bool {
+	return alwaysHTTPRouteFuncs[funcName] || ambiguousHTTPRouteFuncs[funcName]
+}
+
+// stringArgValue returns the unquoted value if the expression is a string literal.
+func stringArgValue(arg ast.Expr) (string, bool) {
+	lit, ok := arg.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	return strings.Trim(lit.Value, `"`), true
 }
 
 // httpClientFuncs maps function names to the argument index containing the URL.
@@ -305,47 +343,71 @@ var httpClientReceivers = map[string]bool{
 	"http": true,
 }
 
+// goHTTPCall describes one matched outbound HTTP client call. Empty host means
+// the call did not match the recognized client/method/URL pattern.
+type goHTTPCall struct {
+	host   string
+	method string
+	rawURL string
+	line   int
+}
+
+// matchHTTPCall recognizes a Go call expression as an outbound HTTP client
+// invocation (http.Get, http.Post, http.NewRequest, ...) and returns the
+// parsed call or ok=false.
+func matchHTTPCall(call *ast.CallExpr, fset *token.FileSet) (goHTTPCall, bool) {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return goHTTPCall{}, false
+	}
+	ident, ok := sel.X.(*ast.Ident)
+	if !ok || !httpClientReceivers[ident.Name] {
+		return goHTTPCall{}, false
+	}
+	urlArgIdx, known := httpClientFuncs[sel.Sel.Name]
+	if !known || len(call.Args) <= urlArgIdx {
+		return goHTTPCall{}, false
+	}
+	rawURL, ok := stringArgValue(call.Args[urlArgIdx])
+	if !ok {
+		return goHTTPCall{}, false
+	}
+	host, ok := common.ParseServiceFromURL(rawURL)
+	if !ok {
+		return goHTTPCall{}, false
+	}
+	return goHTTPCall{
+		host:   host,
+		method: httpCallMethod(sel.Sel.Name, call.Args),
+		rawURL: rawURL,
+		line:   fset.Position(call.Pos()).Line,
+	}, true
+}
+
+// httpCallMethod resolves the HTTP method label. For NewRequest the method is
+// the first string arg; for everything else it's the function name uppercased.
+func httpCallMethod(funcName string, args []ast.Expr) string {
+	method := strings.ToUpper(funcName)
+	if method != "NEWREQUEST" || len(args) == 0 {
+		return method
+	}
+	if literal, ok := stringArgValue(args[0]); ok {
+		return literal
+	}
+	return method
+}
+
 // extractHTTPCalls detects outbound HTTP client calls (http.Get, http.Post, etc.)
 // and creates service nodes for the target hosts.
 func extractHTTPCalls(call *ast.CallExpr, pkgID string, fset *token.FileSet) ([]*model.Node, []*model.Edge) {
-	sel, ok := call.Fun.(*ast.SelectorExpr)
+	hc, ok := matchHTTPCall(call, fset)
 	if !ok {
 		return nil, nil
 	}
-
-	ident, ok := sel.X.(*ast.Ident)
-	if !ok || !httpClientReceivers[ident.Name] {
-		return nil, nil
-	}
-
-	urlArgIdx, known := httpClientFuncs[sel.Sel.Name]
-	if !known || len(call.Args) <= urlArgIdx {
-		return nil, nil
-	}
-
-	lit, ok := call.Args[urlArgIdx].(*ast.BasicLit)
-	if !ok || lit.Kind != token.STRING {
-		return nil, nil
-	}
-
-	rawURL := strings.Trim(lit.Value, `"`)
-	host, ok := common.ParseServiceFromURL(rawURL)
-	if !ok {
-		return nil, nil
-	}
-
-	serviceID := "service:" + host
-	pos := fset.Position(call.Pos())
-	method := strings.ToUpper(sel.Sel.Name)
-	if method == "NEWREQUEST" && len(call.Args) > 0 {
-		if mLit, ok := call.Args[0].(*ast.BasicLit); ok && mLit.Kind == token.STRING {
-			method = strings.Trim(mLit.Value, `"`)
-		}
-	}
-
+	serviceID := "service:" + hc.host
 	node := &model.Node{
 		ID:   serviceID,
-		Name: host,
+		Name: hc.host,
 		Type: model.NodeExternalAPI,
 		Properties: map[string]string{
 			"detected_via": "http_call",
@@ -355,11 +417,11 @@ func extractHTTPCalls(call *ast.CallExpr, pkgID string, fset *token.FileSet) ([]
 		Source:     pkgID,
 		Target:     serviceID,
 		Type:       model.EdgeAPICall,
-		Label:      method + " " + rawURL,
+		Label:      hc.method + " " + hc.rawURL,
 		Confidence: 0.7,
 		Properties: map[string]string{
-			"url":  rawURL,
-			"line": fmt.Sprintf("%d", pos.Line),
+			"url":  hc.rawURL,
+			"line": fmt.Sprintf("%d", hc.line),
 		},
 	}
 	return []*model.Node{node}, []*model.Edge{edge}

@@ -100,40 +100,18 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	modID := fmt.Sprintf("mod:%s/%s", dir, base)
 
-	var nodes []*model.Node
-	var edges []*model.Edge
-
-	nodes = append(nodes, &model.Node{
+	nodes := []*model.Node{{
 		ID:       modID,
 		Name:     base,
 		Type:     model.NodeModule,
 		Language: "typescript",
 		Path:     filepath.Dir(path),
-	})
+	}}
+	var edges []*model.Edge
 
-	// Extract imports
-	for i := 0; i < int(root.ChildCount()); i++ {
-		child := root.Child(i)
-		if child.Type() != "import_statement" {
-			continue
-		}
-		importPath := extractImportSource(child, src)
-		if importPath == "" {
-			continue
-		}
-
-		edges = append(edges, &model.Edge{
-			Source:     modID,
-			Target:     "import:" + importPath,
-			Type:       model.EdgeDependency,
-			Label:      importPath,
-			Confidence: 0.9,
-		})
-
-		infraNodes, infraEdges := common.ClassifyImport(importPath, modID, infraPatterns, "/")
-		nodes = append(nodes, infraNodes...)
-		edges = append(edges, infraEdges...)
-	}
+	importNodes, importEdges := extractImports(root, src, modID)
+	nodes = append(nodes, importNodes...)
+	edges = append(edges, importEdges...)
 
 	// Detect framework from imports before extracting routes
 	framework := detectFramework(root, src)
@@ -166,6 +144,34 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	edges = append(edges, callEdges...)
 
 	return nodes, edges, nil
+}
+
+// extractImports walks the top-level import statements and emits dependency
+// edges plus any infrastructure nodes/edges classified from each import path.
+func extractImports(root *sitter.Node, src []byte, modID string) ([]*model.Node, []*model.Edge) {
+	var nodes []*model.Node
+	var edges []*model.Edge
+	for i := 0; i < int(root.ChildCount()); i++ {
+		child := root.Child(i)
+		if child.Type() != "import_statement" {
+			continue
+		}
+		importPath := extractImportSource(child, src)
+		if importPath == "" {
+			continue
+		}
+		edges = append(edges, &model.Edge{
+			Source:     modID,
+			Target:     "import:" + importPath,
+			Type:       model.EdgeDependency,
+			Label:      importPath,
+			Confidence: 0.9,
+		})
+		infraNodes, infraEdges := common.ClassifyImport(importPath, modID, infraPatterns, "/")
+		nodes = append(nodes, infraNodes...)
+		edges = append(edges, infraEdges...)
+	}
+	return nodes, edges
 }
 
 // extractImportSource gets the import path string from an import_statement node.
