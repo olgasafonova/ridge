@@ -11,11 +11,16 @@ import (
 
 // FileEntry tracks a single file's state and cached analysis results.
 type FileEntry struct {
-	Path        string        `json:"path"`
-	ModTime     time.Time     `json:"mod_time"`
-	ContentHash string        `json:"content_hash"`
-	Nodes       []*model.Node `json:"nodes,omitempty"`
-	Edges       []*model.Edge `json:"edges,omitempty"`
+	Path        string    `json:"path"`
+	ModTime     time.Time `json:"mod_time"`
+	ContentHash string    `json:"content_hash"`
+	// AnalyzerSignature records which analyzer version produced the cached
+	// Nodes/Edges. Entries with a mismatching signature must be re-analyzed
+	// even when content is unchanged. Empty on legacy state files (pre-v2)
+	// triggers a one-time full rescan on first run after upgrade.
+	AnalyzerSignature string        `json:"analyzer_signature,omitempty"`
+	Nodes             []*model.Node `json:"nodes,omitempty"`
+	Edges             []*model.Edge `json:"edges,omitempty"`
 }
 
 // ScanState holds the incremental scan state for a codebase.
@@ -29,7 +34,7 @@ type ScanState struct {
 // NewScanState creates an empty scan state for the given root.
 func NewScanState(rootPath string) *ScanState {
 	return &ScanState{
-		Version:  "1",
+		Version:  "2",
 		RootPath: rootPath,
 		Files:    make(map[string]*FileEntry),
 	}
@@ -107,8 +112,11 @@ func (s *ScanState) DetectChanges(walkedFiles []string) (*ChangeSet, error) {
 	return cs, nil
 }
 
-// UpdateFile records analysis results for a file.
-func (s *ScanState) UpdateFile(path string, nodes []*model.Node, edges []*model.Edge) error {
+// UpdateFile records analysis results for a file. The analyzerSig identifies
+// which analyzer version produced these results so the cache can be invalidated
+// when the analyzer's behavior changes (pass "" only from tests that don't
+// exercise signature-based invalidation).
+func (s *ScanState) UpdateFile(path string, analyzerSig string, nodes []*model.Node, edges []*model.Edge) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", path, err)
@@ -120,11 +128,12 @@ func (s *ScanState) UpdateFile(path string, nodes []*model.Node, edges []*model.
 	}
 
 	s.Files[path] = &FileEntry{
-		Path:        path,
-		ModTime:     info.ModTime(),
-		ContentHash: hash,
-		Nodes:       nodes,
-		Edges:       edges,
+		Path:              path,
+		ModTime:           info.ModTime(),
+		ContentHash:       hash,
+		AnalyzerSignature: analyzerSig,
+		Nodes:             nodes,
+		Edges:             edges,
 	}
 
 	return nil
@@ -135,13 +144,15 @@ func (s *ScanState) RemoveFile(path string) {
 	delete(s.Files, path)
 }
 
-// CachedResult returns the cached nodes and edges for an unchanged file.
-func (s *ScanState) CachedResult(path string) ([]*model.Node, []*model.Edge, bool) {
-	entry, ok := s.Files[path]
-	if !ok {
-		return nil, nil, false
+// CachedResult returns the cached nodes, edges, and analyzer signature for an
+// unchanged file. The signature lets callers verify the cached results were
+// produced by an analyzer with matching behavior before reusing them.
+func (s *ScanState) CachedResult(path string) (sig string, nodes []*model.Node, edges []*model.Edge, ok bool) {
+	entry, exists := s.Files[path]
+	if !exists {
+		return "", nil, nil, false
 	}
-	return entry.Nodes, entry.Edges, true
+	return entry.AnalyzerSignature, entry.Nodes, entry.Edges, true
 }
 
 // hashFile computes the SHA-256 hex digest of a file's contents.

@@ -45,6 +45,16 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 	return New()
 }
 
+// pyAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
+// when emitted Nodes/Edges change shape or when detector logic changes
+// (added/removed framework, new infra classification, schema migrations).
+const pyAnalyzerVersion = "py-v1"
+
+// Signature returns the analyzer's behavior version used for cache invalidation.
+func (a *Analyzer) Signature() string {
+	return pyAnalyzerVersion
+}
+
 // maxFileBytes caps source size before parsing. Files past the cap return a
 // module stub with skipped=size, matching the markdown analyzer convention.
 // Bounds memory and parser work even with WalkTree's iterative walk.

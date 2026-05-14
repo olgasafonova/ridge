@@ -35,7 +35,7 @@ func TestDetectChanges_UnchangedFiles(t *testing.T) {
 	f1 := writeTestFile(t, dir, "a.go", "package a")
 
 	state := NewScanState(dir)
-	if err := state.UpdateFile(f1, nil, nil); err != nil {
+	if err := state.UpdateFile(f1, "test-sig", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -57,7 +57,7 @@ func TestDetectChanges_ModifiedContent(t *testing.T) {
 	f1 := writeTestFile(t, dir, "a.go", "package a")
 
 	state := NewScanState(dir)
-	if err := state.UpdateFile(f1, nil, nil); err != nil {
+	if err := state.UpdateFile(f1, "test-sig", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,7 +83,7 @@ func TestDetectChanges_TouchedButSameContent(t *testing.T) {
 	f1 := writeTestFile(t, dir, "a.go", content)
 
 	state := NewScanState(dir)
-	if err := state.UpdateFile(f1, nil, nil); err != nil {
+	if err := state.UpdateFile(f1, "test-sig", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,7 +110,7 @@ func TestDetectChanges_DeletedFiles(t *testing.T) {
 	f1 := writeTestFile(t, dir, "a.go", "package a")
 
 	state := NewScanState(dir)
-	if err := state.UpdateFile(f1, nil, nil); err != nil {
+	if err := state.UpdateFile(f1, "test-sig", nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,13 +133,16 @@ func TestUpdateFile_StoresNodesAndEdges(t *testing.T) {
 	nodes := []*model.Node{{ID: "n1", Name: "TestNode", Type: model.NodePackage}}
 	edges := []*model.Edge{{Source: "n1", Target: "n2", Type: model.EdgeDependency}}
 
-	if err := state.UpdateFile(f1, nodes, edges); err != nil {
+	if err := state.UpdateFile(f1, "test-sig", nodes, edges); err != nil {
 		t.Fatal(err)
 	}
 
-	gotNodes, gotEdges, ok := state.CachedResult(f1)
+	gotSig, gotNodes, gotEdges, ok := state.CachedResult(f1)
 	if !ok {
 		t.Fatal("CachedResult returned false")
+	}
+	if gotSig != "test-sig" {
+		t.Errorf("expected signature %q, got %q", "test-sig", gotSig)
 	}
 	if len(gotNodes) != 1 || gotNodes[0].ID != "n1" {
 		t.Errorf("unexpected nodes: %+v", gotNodes)
@@ -154,12 +157,123 @@ func TestRemoveFile(t *testing.T) {
 	f1 := writeTestFile(t, dir, "a.go", "package a")
 
 	state := NewScanState(dir)
-	_ = state.UpdateFile(f1, nil, nil)
+	_ = state.UpdateFile(f1, "test-sig", nil, nil)
 
 	state.RemoveFile(f1)
-	_, _, ok := state.CachedResult(f1)
+	_, _, _, ok := state.CachedResult(f1)
 	if ok {
 		t.Error("expected CachedResult to return false after RemoveFile")
+	}
+}
+
+func TestUpdateFile_StoresAnalyzerSignature(t *testing.T) {
+	dir := t.TempDir()
+	f1 := writeTestFile(t, dir, "a.go", "package a")
+
+	state := NewScanState(dir)
+	if err := state.UpdateFile(f1, "go-v3", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	entry := state.Files[f1]
+	if entry == nil {
+		t.Fatal("expected entry for f1")
+	}
+	if entry.AnalyzerSignature != "go-v3" {
+		t.Errorf("expected AnalyzerSignature %q, got %q", "go-v3", entry.AnalyzerSignature)
+	}
+}
+
+func TestClassifyUnchanged_SignatureInvalidation(t *testing.T) {
+	dir := t.TempDir()
+	f1 := writeTestFile(t, dir, "a.go", "package a")
+
+	state := NewScanState(dir)
+	if err := state.UpdateFile(f1, "go-v1", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate analyzer being upgraded: sigByExt now reports "go-v2".
+	sigByExt := map[string]string{".go": "go-v2"}
+	extByPath := map[string]string{f1: ".go"}
+	stats := &ScanStats{}
+
+	toAnalyze, cached := classifyUnchanged(state, []string{f1}, extByPath, sigByExt, stats)
+
+	if len(cached) != 0 {
+		t.Errorf("expected 0 cached results (signature mismatch), got %d", len(cached))
+	}
+	if len(toAnalyze) != 1 {
+		t.Fatalf("expected 1 file to re-analyze, got %d", len(toAnalyze))
+	}
+	if toAnalyze[0].path != f1 {
+		t.Errorf("expected %s in toAnalyze, got %s", f1, toAnalyze[0].path)
+	}
+	if stats.FilesInvalidated != 1 {
+		t.Errorf("expected FilesInvalidated=1, got %d", stats.FilesInvalidated)
+	}
+	if stats.FilesCached != 0 {
+		t.Errorf("expected FilesCached=0, got %d", stats.FilesCached)
+	}
+}
+
+func TestClassifyUnchanged_SignatureMatch(t *testing.T) {
+	dir := t.TempDir()
+	f1 := writeTestFile(t, dir, "a.go", "package a")
+
+	state := NewScanState(dir)
+	if err := state.UpdateFile(f1, "go-v1", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	sigByExt := map[string]string{".go": "go-v1"}
+	extByPath := map[string]string{f1: ".go"}
+	stats := &ScanStats{}
+
+	toAnalyze, cached := classifyUnchanged(state, []string{f1}, extByPath, sigByExt, stats)
+
+	if len(toAnalyze) != 0 {
+		t.Errorf("expected 0 files to re-analyze (signature match), got %d", len(toAnalyze))
+	}
+	if len(cached) != 1 {
+		t.Fatalf("expected 1 cached result, got %d", len(cached))
+	}
+	if cached[0].ext != ".go" {
+		t.Errorf("expected cached ext .go, got %q", cached[0].ext)
+	}
+	if stats.FilesCached != 1 {
+		t.Errorf("expected FilesCached=1, got %d", stats.FilesCached)
+	}
+	if stats.FilesInvalidated != 0 {
+		t.Errorf("expected FilesInvalidated=0, got %d", stats.FilesInvalidated)
+	}
+}
+
+func TestClassifyUnchanged_LegacyEntryInvalidates(t *testing.T) {
+	// Pre-v2 state files have empty AnalyzerSignature. Any current analyzer
+	// signature is non-empty, so the mismatch triggers a one-time re-analysis.
+	dir := t.TempDir()
+	f1 := writeTestFile(t, dir, "a.go", "package a")
+
+	state := NewScanState(dir)
+	if err := state.UpdateFile(f1, "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	sigByExt := map[string]string{".go": "go-v1"}
+	extByPath := map[string]string{f1: ".go"}
+	stats := &ScanStats{}
+
+	toAnalyze, cached := classifyUnchanged(state, []string{f1}, extByPath, sigByExt, stats)
+
+	if len(cached) != 0 {
+		t.Errorf("expected legacy entry to invalidate, got %d cached", len(cached))
+	}
+	if len(toAnalyze) != 1 {
+		t.Errorf("expected 1 file to re-analyze, got %d", len(toAnalyze))
+	}
+	if stats.FilesInvalidated != 1 {
+		t.Errorf("expected FilesInvalidated=1, got %d", stats.FilesInvalidated)
 	}
 }
 

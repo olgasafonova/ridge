@@ -36,6 +36,15 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 	return New()
 }
 
+// mdAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
+// when emitted Nodes/Edges change shape or when link-extraction logic changes.
+const mdAnalyzerVersion = "md-v1"
+
+// Signature returns the analyzer's behavior version used for cache invalidation.
+func (a *Analyzer) Signature() string {
+	return mdAnalyzerVersion
+}
+
 var (
 	// Wiki-link: [[target]] or [[target|display]] or [[target#section]] or [[target#section|display]].
 	// Captures the full inside content; we split on # and | downstream.

@@ -56,13 +56,14 @@ type ScanResult struct {
 
 // ScanStats contains metrics about the scan.
 type ScanStats struct {
-	FilesAnalyzed int   `json:"files_analyzed"`
-	FilesSkipped  int   `json:"files_skipped"`
-	FilesCached   int   `json:"files_cached,omitempty"`  // files reused from cache
-	FilesChanged  int   `json:"files_changed,omitempty"` // files re-analyzed due to changes
-	NodesFound    int   `json:"nodes_found"`
-	EdgesFound    int   `json:"edges_found"`
-	DurationMs    int64 `json:"duration_ms"`
+	FilesAnalyzed    int   `json:"files_analyzed"`
+	FilesSkipped     int   `json:"files_skipped"`
+	FilesCached      int   `json:"files_cached,omitempty"`      // files reused from cache
+	FilesChanged     int   `json:"files_changed,omitempty"`     // files re-analyzed due to changes
+	FilesInvalidated int   `json:"files_invalidated,omitempty"` // files re-analyzed due to analyzer signature change
+	NodesFound       int   `json:"nodes_found"`
+	EdgesFound       int   `json:"edges_found"`
+	DurationMs       int64 `json:"duration_ms"`
 }
 
 // Scanner walks a codebase directory and delegates files to registered analyzers.
@@ -150,7 +151,13 @@ func (s *Scanner) ScanWithOptions(ctx context.Context, rootPath string, opts Sca
 	mergeCachedResults(graph, cachedResults, &stats)
 
 	workers := chooseWorkers(opts.Workers, len(toAnalyze))
-	ac := &analyzeContext{state: state, graph: graph, stats: &stats, maxNodes: opts.MaxNodes}
+	ac := &analyzeContext{
+		state:    state,
+		graph:    graph,
+		stats:    &stats,
+		maxNodes: opts.MaxNodes,
+		sigByExt: s.signatureByExt(),
+	}
 	if analyzeTruncated := s.runAnalysis(ctx, toAnalyze, workers, ac); analyzeTruncated {
 		truncated = true
 	}

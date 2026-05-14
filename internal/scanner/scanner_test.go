@@ -11,6 +11,9 @@ import (
 	"time"
 
 	"github.com/olgasafonova/ridge/internal/analyzer/golang"
+	"github.com/olgasafonova/ridge/internal/analyzer/markdown"
+	"github.com/olgasafonova/ridge/internal/analyzer/python"
+	"github.com/olgasafonova/ridge/internal/analyzer/typescript"
 	"github.com/olgasafonova/ridge/internal/scanner"
 )
 
@@ -391,5 +394,36 @@ func main() { fmt.Println("hi") }
 	}
 	if len(edges) == 0 {
 		t.Fatal("cloned analyzer produced no edges")
+	}
+}
+
+func TestAnalyzerSignatures_AreUniqueAndStable(t *testing.T) {
+	// Every analyzer must return a non-empty signature, and the signatures
+	// must be distinct so a FileEntry produced by one analyzer can never
+	// silently satisfy the cache check of another. Clone() must also return
+	// an analyzer with the same signature (cloning is for goroutine safety,
+	// not for changing behavior).
+	analyzers := []scanner.Analyzer{
+		golang.New(),
+		typescript.New(),
+		python.New(),
+		markdown.New(),
+	}
+
+	seen := make(map[string]string)
+	for _, a := range analyzers {
+		sig := a.Signature()
+		if sig == "" {
+			t.Errorf("analyzer %q has empty signature", a.Language())
+			continue
+		}
+		if prev, ok := seen[sig]; ok {
+			t.Errorf("signature collision: %q used by both %q and %q", sig, prev, a.Language())
+		}
+		seen[sig] = a.Language()
+
+		if cloneSig := a.Clone().Signature(); cloneSig != sig {
+			t.Errorf("%s: Clone().Signature()=%q, want %q", a.Language(), cloneSig, sig)
+		}
 	}
 }

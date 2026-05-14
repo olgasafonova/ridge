@@ -7,13 +7,15 @@ import (
 // analyzeResult holds the output of analyzing a single file.
 type analyzeResult struct {
 	path  string // source file path (for state updates)
+	ext   string // file extension (used to look up the analyzer signature)
 	nodes []*model.Node
 	edges []*model.Edge
 }
 
 // partitionForIncremental performs Phase 1.5: split walked files into work
 // that needs analysis and cached results that can be reused. Without state,
-// every file goes into toAnalyze. Updates stats.FilesChanged / FilesCached.
+// every file goes into toAnalyze. Updates stats.FilesChanged / FilesCached /
+// FilesInvalidated.
 func (s *Scanner) partitionForIncremental(files []fileWork, state *ScanState, stats *ScanStats) (toAnalyze []fileWork, cached []analyzeResult) {
 	if state == nil {
 		return files, nil
@@ -29,7 +31,8 @@ func (s *Scanner) partitionForIncremental(files []fileWork, state *ScanState, st
 	toAnalyze = collectChangedWork(changes.Added, changes.Modified, extByPath)
 	stats.FilesChanged = len(toAnalyze)
 
-	unchangedAnalyze, cached := classifyUnchanged(state, changes.Unchanged, extByPath, stats)
+	sigByExt := s.signatureByExt()
+	unchangedAnalyze, cached := classifyUnchanged(state, changes.Unchanged, extByPath, sigByExt, stats)
 	toAnalyze = append(toAnalyze, unchangedAnalyze...)
 
 	for _, path := range changes.Deleted {
@@ -41,8 +44,20 @@ func (s *Scanner) partitionForIncremental(files []fileWork, state *ScanState, st
 		"added", len(changes.Added),
 		"modified", len(changes.Modified),
 		"deleted", len(changes.Deleted),
+		"invalidated", stats.FilesInvalidated,
 	)
 	return toAnalyze, cached
+}
+
+// signatureByExt builds a map of file extension → current analyzer signature.
+// Used to decide whether a cached FileEntry was produced by an analyzer whose
+// behavior still matches the current binary.
+func (s *Scanner) signatureByExt() map[string]string {
+	out := make(map[string]string, len(s.analyzers))
+	for ext, a := range s.analyzers {
+		out[ext] = a.Signature()
+	}
+	return out
 }
 
 // indexFileWork returns parallel slices of paths and a path→ext lookup map.
@@ -70,17 +85,27 @@ func collectChangedWork(added, modified []string, extByPath map[string]string) [
 }
 
 // classifyUnchanged splits unchanged paths into two buckets: those with cached
-// analyzer output (reused as-is) and those without (must be re-analyzed).
-// Updates stats.FilesCached for every reused result.
-func classifyUnchanged(state *ScanState, unchanged []string, extByPath map[string]string, stats *ScanStats) (toAnalyze []fileWork, cached []analyzeResult) {
+// analyzer output that matches the current analyzer signature (reused as-is)
+// and those whose cache is missing or stale (must be re-analyzed). Updates
+// stats.FilesCached for cache hits and stats.FilesInvalidated for entries
+// rejected due to signature mismatch.
+func classifyUnchanged(state *ScanState, unchanged []string, extByPath map[string]string, sigByExt map[string]string, stats *ScanStats) (toAnalyze []fileWork, cached []analyzeResult) {
 	for _, path := range unchanged {
-		nodes, edges, ok := state.CachedResult(path)
-		if ok {
-			cached = append(cached, analyzeResult{nodes: nodes, edges: edges, path: path})
-			stats.FilesCached++
+		ext := extByPath[path]
+		cachedSig, nodes, edges, ok := state.CachedResult(path)
+		if !ok {
+			toAnalyze = append(toAnalyze, fileWork{path: path, ext: ext})
 			continue
 		}
-		toAnalyze = append(toAnalyze, fileWork{path: path, ext: extByPath[path]})
+		if cachedSig != sigByExt[ext] {
+			// Analyzer behavior has changed since this entry was cached
+			// (or entry predates signature tracking). Re-analyze.
+			toAnalyze = append(toAnalyze, fileWork{path: path, ext: ext})
+			stats.FilesInvalidated++
+			continue
+		}
+		cached = append(cached, analyzeResult{nodes: nodes, edges: edges, path: path, ext: ext})
+		stats.FilesCached++
 	}
 	return toAnalyze, cached
 }

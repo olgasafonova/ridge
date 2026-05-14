@@ -16,6 +16,10 @@ type analyzeContext struct {
 	graph    *model.ArchGraph
 	stats    *ScanStats
 	maxNodes int
+	// sigByExt maps file extension → current analyzer signature. Used when
+	// persisting fresh results so the cache can be invalidated on future
+	// scans if the analyzer's behavior changes.
+	sigByExt map[string]string
 }
 
 // cloneAnalyzers creates independent copies of all registered analyzers.
@@ -68,7 +72,7 @@ func (s *Scanner) analyzeSequential(ctx context.Context, toAnalyze []fileWork, a
 			continue
 		}
 		ac.stats.FilesAnalyzed++
-		s.maybeUpdateState(ac.state, f.path, nodes, edges)
+		s.maybeUpdateState(ac.state, f.path, ac.sigByExt[f.ext], nodes, edges)
 		if mergeNodesAndEdges(ac.graph, nodes, edges, ac.stats, ac.maxNodes) {
 			return true
 		}
@@ -99,7 +103,7 @@ func (s *Scanner) analyzeParallel(ctx context.Context, toAnalyze []fileWork, wor
 	truncated := false
 	for r := range resultCh {
 		ac.stats.FilesAnalyzed++
-		s.maybeUpdateState(ac.state, r.path, r.nodes, r.edges)
+		s.maybeUpdateState(ac.state, r.path, ac.sigByExt[r.ext], r.nodes, r.edges)
 		if !truncated && mergeNodesAndEdges(ac.graph, r.nodes, r.edges, ac.stats, ac.maxNodes) {
 			truncated = true
 			// keep draining resultCh so workers can finish; max-nodes bail-out
@@ -123,7 +127,7 @@ func (s *Scanner) worker(ctx context.Context, wg *sync.WaitGroup, workCh <-chan 
 			s.logger.Warn("Analyzer error", "path", f.path, "error", err)
 			continue
 		}
-		resultCh <- analyzeResult{nodes: nodes, edges: edges, path: f.path}
+		resultCh <- analyzeResult{nodes: nodes, edges: edges, path: f.path, ext: f.ext}
 	}
 }
 
@@ -146,12 +150,14 @@ func mergeNodesAndEdges(graph *model.ArchGraph, nodes []*model.Node, edges []*mo
 }
 
 // maybeUpdateState writes fresh analyzer output into the persistent ScanState
-// if state is non-nil; logs and continues on error.
-func (s *Scanner) maybeUpdateState(state *ScanState, path string, nodes []*model.Node, edges []*model.Edge) {
+// if state is non-nil; logs and continues on error. analyzerSig is the
+// signature of the analyzer that produced these results — recorded so future
+// scans can detect when the cache is stale due to analyzer behavior changes.
+func (s *Scanner) maybeUpdateState(state *ScanState, path string, analyzerSig string, nodes []*model.Node, edges []*model.Edge) {
 	if state == nil {
 		return
 	}
-	if err := state.UpdateFile(path, nodes, edges); err != nil {
+	if err := state.UpdateFile(path, analyzerSig, nodes, edges); err != nil {
 		s.logger.Warn("State update error", "path", path, "error", err)
 	}
 }

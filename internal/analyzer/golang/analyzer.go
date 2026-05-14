@@ -39,6 +39,16 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 	return New()
 }
 
+// goAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
+// when emitted Nodes/Edges change shape or when detector logic changes
+// (added/removed framework, new infra classification, schema migrations).
+const goAnalyzerVersion = "go-v1"
+
+// Signature returns the analyzer's behavior version used for cache invalidation.
+func (a *Analyzer) Signature() string {
+	return goAnalyzerVersion
+}
+
 // Analyze parses a Go file and extracts architectural elements.
 func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	fset := token.NewFileSet()

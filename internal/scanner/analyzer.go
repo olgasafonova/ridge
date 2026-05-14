@@ -18,4 +18,11 @@ type Analyzer interface {
 	// Clone returns an independent copy safe for use in a separate goroutine.
 	// Tree-sitter parsers are not thread-safe; each worker needs its own instance.
 	Clone() Analyzer
+
+	// Signature returns a stable identifier for the analyzer's behavior. Cached
+	// results produced by a different signature are treated as stale even when
+	// file content is unchanged. Bump the embedded version constant in the
+	// analyzer whenever its behavior changes (new detectors, schema changes,
+	// bug fixes that alter emitted Nodes/Edges).
+	Signature() string
 }
