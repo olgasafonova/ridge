@@ -326,3 +326,32 @@ func TestLanguage(t *testing.T) {
 		t.Fatalf("expected 'python', got %s", a.Language())
 	}
 }
+
+// TestAnalyze_OversizedFileSkipsParsing verifies that files past maxFileBytes
+// return a stub module node with skipped=size and no edges. Prevents the
+// 10 MiB-of-nested-parens DoS reproducer documented in beads-he5.
+func TestAnalyze_OversizedFileSkipsParsing(t *testing.T) {
+	dir := t.TempDir()
+	big := make([]byte, maxFileBytes+1024)
+	for i := range big {
+		big[i] = ' '
+	}
+	path := writePyFile(t, dir, "huge.py", string(big))
+
+	nodes, edges, err := New().Analyze(path)
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if len(nodes) != 1 {
+		t.Fatalf("want 1 stub node, got %d", len(nodes))
+	}
+	if nodes[0].Type != model.NodeModule {
+		t.Fatalf("want module node, got %s", nodes[0].Type)
+	}
+	if nodes[0].Properties["skipped"] != "size" {
+		t.Fatalf("expected skipped=size, got %v", nodes[0].Properties)
+	}
+	if len(edges) != 0 {
+		t.Fatalf("want 0 edges over cap, got %d", len(edges))
+	}
+}

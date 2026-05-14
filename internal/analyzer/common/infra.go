@@ -74,11 +74,24 @@ func ParseServiceFromURL(rawURL string) (host string, ok bool) {
 	return h, true
 }
 
-// WalkTree performs a depth-first traversal of a tree-sitter node,
-// calling fn for each node encountered.
+// WalkTree performs a pre-order depth-first traversal of a tree-sitter node,
+// calling fn for each node encountered. Iterative: a recursive walk overflows
+// the goroutine stack on pathologically nested source (e.g. millions of nested
+// parens), and stack overflow is `runtime.throw` — unrecoverable, kills the
+// scan and every in-flight tool.
 func WalkTree(node *sitter.Node, fn func(*sitter.Node)) {
-	fn(node)
-	for i := 0; i < int(node.ChildCount()); i++ {
-		WalkTree(node.Child(i), fn)
+	if node == nil {
+		return
+	}
+	stack := []*sitter.Node{node}
+	for len(stack) > 0 {
+		n := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		fn(n)
+		// Push children in reverse so the leftmost child is popped first,
+		// preserving the pre-order semantics callers depended on.
+		for i := int(n.ChildCount()) - 1; i >= 0; i-- {
+			stack = append(stack, n.Child(i))
+		}
 	}
 }

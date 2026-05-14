@@ -1,7 +1,12 @@
 package common
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	sitter "github.com/smacker/go-tree-sitter"
+	"github.com/smacker/go-tree-sitter/python"
 
 	"github.com/olgasafonova/ridge/internal/model"
 )
@@ -66,5 +71,66 @@ func TestMatchesAny_PythonStyle(t *testing.T) {
 	}
 	if MatchesAny("sqlalchemyx", patterns, ".") {
 		t.Fatal("sqlalchemyx should not match sqlalchemy")
+	}
+}
+
+func parseToTree(t *testing.T, src string) (*sitter.Tree, *sitter.Node) {
+	t.Helper()
+	p := sitter.NewParser()
+	p.SetLanguage(python.GetLanguage())
+	tree, err := p.ParseCtx(context.Background(), nil, []byte(src))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return tree, tree.RootNode()
+}
+
+// TestWalkTree_NilSafe verifies the walker no-ops on nil instead of panicking.
+func TestWalkTree_NilSafe(t *testing.T) {
+	called := false
+	WalkTree(nil, func(*sitter.Node) { called = true })
+	if called {
+		t.Fatal("fn must not be called for nil node")
+	}
+}
+
+// TestWalkTree_PreOrderDFS verifies the iterative walker preserves pre-order
+// semantics: parents come before children, leftmost child before rightmost.
+// Tree-sitter pre-order DFS yields non-decreasing start_byte values.
+func TestWalkTree_PreOrderDFS(t *testing.T) {
+	tree, root := parseToTree(t, "x = 1\ny = 2\n")
+	defer tree.Close()
+
+	var starts []uint32
+	WalkTree(root, func(n *sitter.Node) {
+		starts = append(starts, n.StartByte())
+	})
+
+	if len(starts) < 3 {
+		t.Fatalf("expected several nodes for a 2-line python source, got %d", len(starts))
+	}
+	for i := 1; i < len(starts); i++ {
+		if starts[i] < starts[i-1] {
+			t.Fatalf("pre-order broken at index %d: start=%d < prev=%d", i, starts[i], starts[i-1])
+		}
+	}
+}
+
+// TestWalkTree_DeepNestingNoOverflow walks a tree built from 20k nested
+// parens. The previous recursive implementation grew the goroutine stack
+// linearly with depth and triggered runtime.throw on pathological inputs;
+// the iterative implementation walks the same tree in heap memory.
+func TestWalkTree_DeepNestingNoOverflow(t *testing.T) {
+	const depth = 20000
+	src := "x = " + strings.Repeat("(", depth) + "1" + strings.Repeat(")", depth) + "\n"
+
+	tree, root := parseToTree(t, src)
+	defer tree.Close()
+
+	count := 0
+	WalkTree(root, func(*sitter.Node) { count++ })
+
+	if count < depth {
+		t.Fatalf("expected walker to visit at least %d nodes, got %d", depth, count)
 	}
 }

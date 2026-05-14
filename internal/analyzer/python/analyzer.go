@@ -45,8 +45,21 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 	return New()
 }
 
+// maxFileBytes caps source size before parsing. Files past the cap return a
+// module stub with skipped=size, matching the markdown analyzer convention.
+// Bounds memory and parser work even with WalkTree's iterative walk.
+const maxFileBytes = 5 * 1024 * 1024 // 5 MB
+
 // Analyze parses a Python file and extracts architectural elements.
 func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Size() > maxFileBytes {
+		return []*model.Node{moduleSkippedForSize(path, info.Size())}, nil, nil
+	}
+
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
@@ -548,6 +561,25 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 	})
 
 	return nodes, edges
+}
+
+// moduleSkippedForSize builds a module node for a Python file past the size
+// cap. The module is visible in the graph; no parsing or extraction runs.
+func moduleSkippedForSize(path string, size int64) *model.Node {
+	dir := filepath.Base(filepath.Dir(path))
+	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return &model.Node{
+		ID:       fmt.Sprintf("mod:%s/%s", dir, base),
+		Name:     base,
+		Type:     model.NodeModule,
+		Language: "python",
+		Path:     filepath.Dir(path),
+		Properties: map[string]string{
+			"skipped":      "size",
+			"size_bytes":   fmt.Sprintf("%d", size),
+			"max_capacity": fmt.Sprintf("%d", maxFileBytes),
+		},
+	}
 }
 
 // stripPythonString removes quotes from Python string literals.
