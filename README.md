@@ -57,7 +57,7 @@ Then ask `arch_generate` for a Mermaid diagram, `arch_validate` to check for cir
 
 ## Why not X
 
-Three projects share parts of this space. None cover it the same way.
+Four projects share parts of this space. None cover it the same way.
 
 **[CodeFlow](https://github.com/braedonsaunders/codeflow)** (2.0k stars, MIT) is a single-file React + D3 page that parses JS, TypeScript, and Python in the browser. It reads from GitHub's API, renders a file-level dependency graph, and adds panels for blast radius, security scans, and PR impact. Browser-native, file-granular. No Go support; requires CDN access; no agent interface.
 
@@ -65,9 +65,11 @@ Three projects share parts of this space. None cover it the same way.
 
 **[Graphify](https://github.com/safishamsi/graphify)** (35k stars, MIT) is a multi-harness skill that turns any folder into a queryable knowledge graph: 25 code languages plus markdown, images, and video transcription. Persistent `graph.json`, SHA256 incremental cache, `merge-graphs` for cross-repo composition. Skill-scope, not MCP. No drift detection, no architecture-specific node types, no infrastructure inference.
 
+**[CocoIndex](https://github.com/cocoindex-io/cocoindex)** (9.7k stars, Apache-2.0) is a Python-front, Rust-core incremental indexing framework that turns codebases, meeting notes, inboxes, Slack, PDFs, and videos into vector-searchable chunks for RAG. Code is one substrate of many. Different problem class: cocoindex answers "find me code semantically similar to query Q"; ridge answers "show me the structural graph and what changed architecturally between two refs." Use cocoindex when you want semantic chunk search across heterogeneous substrates. Use ridge when you want a typed architecture model with drift detection.
+
 **What ridge focuses on.** Agent-facing MCP transport across all 19 tools. Go-native via `go/ast`. Drift narratives: `arch_drift_explain` returns a paste-ready PR paragraph in one call, no LLM round-trip. Cross-substrate: code and markdown share the same graph model, so `arch_blast_radius` answers "if I change `internal/scanner`, what else needs review?" across both. Infrastructure-aware (databases, queues, caches as typed nodes with confidence scores).
 
-**What ridge doesn't do.** No browser-native UI. No multimodal ingest (images, video, audio). If you want a file-level visualizer for JS/TS/Python with a UI, use CodeFlow. If you want a multimodal knowledge graph at skill scope, use Graphify.
+**What ridge doesn't do.** No browser-native UI. No multimodal ingest (images, video, audio). No semantic chunk search for RAG. If you want a file-level visualizer for JS/TS/Python with a UI, use CodeFlow. If you want a multimodal knowledge graph at skill scope, use Graphify. If you want incremental vector indexing across heterogeneous corpora, use CocoIndex.
 
 ## Usage examples
 
