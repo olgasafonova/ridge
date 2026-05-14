@@ -3,8 +3,6 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 
 	"golang.org/x/sync/errgroup"
 
@@ -44,16 +42,7 @@ func (h *HandlerRegistry) archValidate(ctx context.Context, args ArchValidateArg
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
-	// Load custom rules if .arch-rules.yaml exists in the project
-	var customRules *detector.RulesConfig
-	rulesPath := filepath.Join(path, ".arch-rules.yaml")
-	if _, err := os.Stat(rulesPath); err == nil {
-		customRules, err = detector.LoadRules(rulesPath)
-		if err != nil {
-			h.logger.Warn("Failed to load custom rules", "path", rulesPath, "error", err)
-		}
-	}
-
+	customRules := h.loadCustomRules(path)
 	detectedViolations := detector.ValidateGraph(graph, customRules)
 	violations := make([]string, 0, len(detectedViolations))
 	for _, v := range detectedViolations {

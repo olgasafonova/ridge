@@ -186,7 +186,7 @@ func (h *HandlerRegistry) archRecommend(ctx context.Context, args ArchRecommendA
 		return nil, fmt.Errorf("scanning codebase: %w", err)
 	}
 
-	customRules := loadCustomRules(path)
+	customRules := h.loadCustomRules(path)
 	violations := detector.ValidateGraph(graph, customRules)
 	metrics := detector.ComputeMetrics(graph)
 	boundaries, _ := detector.DetectBoundaries(args.Path)
@@ -206,14 +206,32 @@ func (h *HandlerRegistry) archRecommend(ctx context.Context, args ArchRecommendA
 	}, nil
 }
 
+// inRepoRulesEnv opts users into loading .arch-rules.yaml from inside an
+// analyzed repo. Without it, the file is ignored: an attacker who controls
+// the scanned content (third-party repo, prompt-injection-reachable path)
+// could otherwise ship a rules file that downgrades their own violations.
+const inRepoRulesEnv = "RIDGE_ALLOW_INREPO_RULES"
+
 // loadCustomRules returns the parsed .arch-rules.yaml from the repo root, or
-// nil if no rules file exists or parsing fails.
-func loadCustomRules(repoPath string) *detector.RulesConfig {
+// nil if no rules file exists, the opt-in env var is unset, or parsing fails.
+func (h *HandlerRegistry) loadCustomRules(repoPath string) *detector.RulesConfig {
 	rulesPath := filepath.Join(repoPath, ".arch-rules.yaml")
 	if _, err := os.Stat(rulesPath); err != nil {
 		return nil
 	}
-	rules, _ := detector.LoadRules(rulesPath)
+	if os.Getenv(inRepoRulesEnv) != "1" {
+		h.logger.Warn(
+			"ignored .arch-rules.yaml inside analyzed repo (confused-deputy risk); set env=1 to opt in for trusted repos",
+			"path", rulesPath,
+			"env", inRepoRulesEnv,
+		)
+		return nil
+	}
+	rules, err := detector.LoadRules(rulesPath)
+	if err != nil {
+		h.logger.Warn("failed to parse custom rules", "path", rulesPath, "error", err)
+		return nil
+	}
 	return rules
 }
 
