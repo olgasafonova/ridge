@@ -111,10 +111,12 @@ func (h *HandlerRegistry) scanPath(ctx context.Context, path, alias string, sc S
 
 // ArchScanArgs are the arguments for arch_scan.
 type ArchScanArgs struct {
-	Path   string   `json:"path"`
-	Paths  []string `json:"paths,omitempty"`
-	Repo   string   `json:"repo,omitempty"`
-	Detail string   `json:"detail,omitempty"` // "summary" (default) or "full"
+	Path        string   `json:"path"`
+	Paths       []string `json:"paths,omitempty"`
+	Repo        string   `json:"repo,omitempty"`
+	Detail      string   `json:"detail,omitempty"`       // "summary" (default) or "full"
+	Samples     bool     `json:"samples,omitempty"`      // when true, populate Node.Source with N source lines for file-backed nodes
+	SampleLines int      `json:"sample_lines,omitempty"` // lines per sample (default 6); requires samples=true
 	ScanControl
 }
 
@@ -185,6 +187,9 @@ func (h *HandlerRegistry) archScanSingle(ctx context.Context, args ArchScanArgs)
 	}
 
 	if strings.EqualFold(args.Detail, "full") {
+		if args.Samples {
+			scanner.PopulateSamples(graph, args.SampleLines)
+		}
 		graph.RelativePaths()
 		res.Nodes = graph.Nodes()
 		res.Edges = graph.Edges()
@@ -233,6 +238,9 @@ func (h *HandlerRegistry) archScanMulti(ctx context.Context, args ArchScanArgs) 
 	}
 
 	if strings.EqualFold(args.Detail, "full") {
+		if args.Samples {
+			scanner.PopulateSamples(merged, args.SampleLines)
+		}
 		res.Nodes = merged.Nodes()
 		res.Edges = merged.Edges()
 	}

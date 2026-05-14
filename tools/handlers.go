@@ -8,8 +8,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/olgasafonova/ridge/internal/analyzer/golang"
+	"github.com/olgasafonova/ridge/internal/analyzer/java"
 	"github.com/olgasafonova/ridge/internal/analyzer/markdown"
 	"github.com/olgasafonova/ridge/internal/analyzer/python"
+	"github.com/olgasafonova/ridge/internal/analyzer/rust"
 	"github.com/olgasafonova/ridge/internal/analyzer/typescript"
 	"github.com/olgasafonova/ridge/internal/infra"
 	"github.com/olgasafonova/ridge/internal/registry"
@@ -30,7 +32,9 @@ func NewHandlerRegistry(logger *slog.Logger) *HandlerRegistry {
 	tsAnalyzer := typescript.New()
 	pyAnalyzer := python.New()
 	mdAnalyzer := markdown.New()
-	s := scanner.New(logger, goAnalyzer, tsAnalyzer, pyAnalyzer, mdAnalyzer)
+	rustAnalyzer := rust.New()
+	javaAnalyzer := java.New()
+	s := scanner.New(logger, goAnalyzer, tsAnalyzer, pyAnalyzer, mdAnalyzer, rustAnalyzer, javaAnalyzer)
 
 	reg, err := registry.Load()
 	if err != nil {

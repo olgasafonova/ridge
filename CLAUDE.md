@@ -1,15 +1,17 @@
 # Ridge
 
 ## Project
-Go MCP server that scans codebases, generates architecture diagrams, and detects when code drifts from documented architecture. Supports Go (go/ast), TypeScript and Python (tree-sitter), and Markdown (regex-based wiki-link / relative-link extraction). Outputs Mermaid, PlantUML, C4, Structurizr DSL, JSON, draw.io XML, Excalidraw JSON, self-contained HTML, and a D3 force-directed graph (9 formats total).
+Go MCP server that scans codebases, generates architecture diagrams, and detects when code drifts from documented architecture. Supports Go (go/ast), TypeScript / Python / Rust / Java (tree-sitter), and Markdown (regex-based wiki-link / relative-link extraction). Outputs Mermaid, PlantUML, C4, Structurizr DSL, JSON, draw.io XML, Excalidraw JSON, self-contained HTML, and a D3 force-directed graph (9 formats total).
 
 ## Architecture
 - `cmd/ridge/main.go` - entry point with stdio transport
 - `internal/model/` - ArchGraph, Node, Edge, Diff types (core data model)
-- `internal/scanner/` - File walker, orchestrator (discovers files and delegates to analyzers)
+- `internal/scanner/` - File walker, orchestrator, sample-snippet population (`samples.go`)
 - `internal/analyzer/golang/` - Go AST-based analysis (import-based deps, stdlib HTTP endpoints, infra classification)
-- `internal/analyzer/typescript/` - tree-sitter TypeScript analysis (import-based deps, Express endpoints, infra classification)
-- `internal/analyzer/python/` - tree-sitter Python analysis (import-based deps, Flask/FastAPI endpoints, infra classification)
+- `internal/analyzer/typescript/` - tree-sitter TypeScript analysis (import-based deps, Express/NestJS endpoints, infra classification)
+- `internal/analyzer/python/` - tree-sitter Python analysis (import-based deps, Flask/FastAPI/Django endpoints, infra classification)
+- `internal/analyzer/rust/` - tree-sitter Rust analysis (use-decl deps, actix/axum/rocket route attributes, infra classification, reqwest/hyper HTTP calls)
+- `internal/analyzer/java/` - tree-sitter Java analysis (import deps, Spring/JAX-RS/Quarkus annotations, infra classification, RestTemplate/WebClient HTTP calls)
 - `internal/analyzer/markdown/` - Markdown link extraction (Obsidian wiki-links `[[note]]`, relative `.md` links)
 - `internal/detector/` - Boundary detection, topology inference, dataflow tracing, rule validation, recommendations, blast-radius
 - `internal/render/` - Output renderers: Mermaid, PlantUML, C4, Structurizr, JSON, draw.io, Excalidraw, HTML, forcegraph (D3)
