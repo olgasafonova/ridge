@@ -36,32 +36,49 @@ func LinkNotesToPackages(graph *model.ArchGraph) int {
 
 	added := 0
 	for _, note := range notes {
-		src, err := os.ReadFile(note.Path) //nolint:gosec // G304: path from analyzer-emitted node
-		if err != nil {
+		added += linkOneNote(graph, note, packagesBySuffix)
+	}
+	return added
+}
+
+// linkOneNote reads a single note file and adds "documents" edges from the
+// note to every package whose path-suffix matches a code-span candidate.
+// Returns the number of edges actually added.
+func linkOneNote(graph *model.ArchGraph, note *model.Node, packagesBySuffix map[string][]*model.Node) int {
+	src, err := os.ReadFile(note.Path) //nolint:gosec // G304: path from analyzer-emitted node
+	if err != nil {
+		return 0
+	}
+	added := 0
+	seen := map[string]bool{}
+	for _, m := range inlineCodeSpanRe.FindAllStringSubmatch(string(src), -1) {
+		candidate := normalizeCandidate(m[1])
+		if candidate == "" {
 			continue
 		}
-		seen := map[string]bool{}
-		for _, m := range inlineCodeSpanRe.FindAllStringSubmatch(string(src), -1) {
-			candidate := normalizeCandidate(m[1])
-			if candidate == "" {
-				continue
-			}
-			for _, pkg := range packagesBySuffix[candidate] {
-				key := note.ID + "->" + pkg.ID
-				if seen[key] {
-					continue
-				}
-				seen[key] = true
-				if graph.AddEdge(&model.Edge{
-					Source:     note.ID,
-					Target:     pkg.ID,
-					Type:       model.EdgeDependency,
-					Label:      "documents",
-					Confidence: 0.6,
-				}) {
-					added++
-				}
-			}
+		added += linkNoteToCandidates(graph, note, packagesBySuffix[candidate], seen)
+	}
+	return added
+}
+
+// linkNoteToCandidates emits one "documents" edge per (note, pkg) pair that
+// hasn't already been emitted in this note's pass.
+func linkNoteToCandidates(graph *model.ArchGraph, note *model.Node, candidates []*model.Node, seen map[string]bool) int {
+	added := 0
+	for _, pkg := range candidates {
+		key := note.ID + "->" + pkg.ID
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		if graph.AddEdge(&model.Edge{
+			Source:     note.ID,
+			Target:     pkg.ID,
+			Type:       model.EdgeDependency,
+			Label:      "documents",
+			Confidence: 0.6,
+		}) {
+			added++
 		}
 	}
 	return added
