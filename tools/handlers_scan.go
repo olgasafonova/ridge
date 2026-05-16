@@ -206,46 +206,63 @@ func (h *HandlerRegistry) archScanMulti(ctx context.Context, args ArchScanArgs) 
 		return nil, fmt.Errorf("paths must not be empty")
 	}
 
-	opts := args.toScanOptions()
+	merged, truncated, totalStats, err := h.scanAndMergePaths(ctx, args.Paths, args.toScanOptions())
+	if err != nil {
+		return nil, err
+	}
+
+	res := summaryResult(merged, &totalStats, truncated)
+	if strings.EqualFold(args.Detail, "full") {
+		populateFullDetail(res, merged, args.Samples, args.SampleLines)
+	}
+	return res, nil
+}
+
+// scanAndMergePaths runs cachedScan on each path and merges all resulting
+// graphs into one. Returns the merged graph, whether any scan was truncated,
+// and aggregated stats.
+func (h *HandlerRegistry) scanAndMergePaths(ctx context.Context, paths []string, opts scanner.ScanOptions) (*model.ArchGraph, bool, scanner.ScanStats, error) {
 	var (
 		merged     *model.ArchGraph
 		truncated  bool
 		totalStats scanner.ScanStats
 	)
-
-	for _, p := range args.Paths {
+	for _, p := range paths {
 		if err := safepath.ValidateScanPath(p); err != nil {
-			return nil, fmt.Errorf("invalid path %q: %w", p, err)
+			return nil, false, scanner.ScanStats{}, fmt.Errorf("invalid path %q: %w", p, err)
 		}
-
 		result, err := h.cachedScan(ctx, p, "", opts)
 		if err != nil && !errors.Is(err, scanner.ErrLimitReached) {
-			return nil, fmt.Errorf("scanning %q: %w", p, err)
+			return nil, false, scanner.ScanStats{}, fmt.Errorf("scanning %q: %w", p, err)
 		}
 		truncated = truncated || result.Truncated
 		addScanStats(&totalStats, result.Stats)
 		merged = mergeOrAdopt(merged, result.Graph)
 	}
+	return merged, truncated, totalStats, nil
+}
 
-	res := &ArchScanResult{
+// summaryResult builds the minimal-detail ArchScanResult.
+func summaryResult(merged *model.ArchGraph, totalStats *scanner.ScanStats, truncated bool) *ArchScanResult {
+	return &ArchScanResult{
 		RootPath:  merged.RootPath,
 		Topology:  string(merged.Topology),
 		NodeCount: merged.NodeCount(),
 		EdgeCount: merged.EdgeCount(),
 		Summary:   merged.Summary(),
-		Stats:     &totalStats,
+		Stats:     totalStats,
 		Truncated: truncated,
 	}
+}
 
-	if strings.EqualFold(args.Detail, "full") {
-		if args.Samples {
-			scanner.PopulateSamples(merged, args.SampleLines)
-		}
-		res.Nodes = merged.Nodes()
-		res.Edges = merged.Edges()
+// populateFullDetail attaches Nodes and Edges (and optional samples) to res
+// for "full" detail responses.
+func populateFullDetail(res *ArchScanResult, merged *model.ArchGraph, samples bool, sampleLines int) {
+	if samples {
+		scanner.PopulateSamples(merged, sampleLines)
 	}
-
-	return res, nil
+	res.Nodes = merged.Nodes()
+	res.Edges = merged.Edges()
 }
 
 // =============================================================================
