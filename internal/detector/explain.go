@@ -170,27 +170,43 @@ func infraDecisionFor(n *model.Node) (string, bool) {
 }
 
 func languageMixDecision(graph *model.ArchGraph) string {
+	languages := countLanguages(graph)
+	switch len(languages) {
+	case 0:
+		return ""
+	case 1:
+		return singleLanguageDecision(languages)
+	default:
+		return multiLanguageDecision(languages)
+	}
+}
+
+// countLanguages tallies non-empty Language values across graph nodes.
+func countLanguages(graph *model.ArchGraph) map[string]int {
 	languages := make(map[string]int)
 	for _, n := range graph.Nodes() {
 		if n.Language != "" {
 			languages[n.Language]++
 		}
 	}
-	switch len(languages) {
-	case 0:
-		return ""
-	case 1:
-		for lang := range languages {
-			return fmt.Sprintf("Single-language codebase: %s", lang)
-		}
-		return ""
-	default:
-		var langParts []string
-		for lang, count := range languages {
-			langParts = append(langParts, fmt.Sprintf("%s (%d components)", lang, count))
-		}
-		return fmt.Sprintf("Multi-language codebase: %s", strings.Join(langParts, ", "))
+	return languages
+}
+
+// singleLanguageDecision formats the decision string for a one-language map.
+func singleLanguageDecision(languages map[string]int) string {
+	for lang := range languages {
+		return fmt.Sprintf("Single-language codebase: %s", lang)
 	}
+	return ""
+}
+
+// multiLanguageDecision formats the decision string for a multi-language map.
+func multiLanguageDecision(languages map[string]int) string {
+	parts := make([]string, 0, len(languages))
+	for lang, count := range languages {
+		parts = append(parts, fmt.Sprintf("%s (%d components)", lang, count))
+	}
+	return fmt.Sprintf("Multi-language codebase: %s", strings.Join(parts, ", "))
 }
 
 func identifyRisks(graph *model.ArchGraph) []string {
