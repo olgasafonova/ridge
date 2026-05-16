@@ -58,34 +58,42 @@ func (c *Cache[T]) Put(key string, value T) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Evict expired entries first
 	now := time.Now()
-	for k, e := range c.entries {
-		if now.After(e.ExpiresAt) {
-			delete(c.entries, k)
-		}
-	}
-
-	// If still at capacity, evict the entry closest to expiration
+	c.evictExpired(now)
 	if len(c.entries) >= c.maxSize {
-		var oldestKey string
-		var oldestTime time.Time
-		first := true
-		for k, e := range c.entries {
-			if first || e.ExpiresAt.Before(oldestTime) {
-				oldestKey = k
-				oldestTime = e.ExpiresAt
-				first = false
-			}
-		}
-		if oldestKey != "" {
-			delete(c.entries, oldestKey)
-		}
+		c.evictOldest()
 	}
 
 	c.entries[key] = &CacheEntry[T]{
 		Value:     value,
 		ExpiresAt: now.Add(c.ttl),
+	}
+}
+
+// evictExpired removes every entry whose ExpiresAt is before now. Caller must
+// hold c.mu.
+func (c *Cache[T]) evictExpired(now time.Time) {
+	for k, e := range c.entries {
+		if now.After(e.ExpiresAt) {
+			delete(c.entries, k)
+		}
+	}
+}
+
+// evictOldest removes the entry closest to expiration. Caller must hold c.mu.
+func (c *Cache[T]) evictOldest() {
+	var oldestKey string
+	var oldestTime time.Time
+	first := true
+	for k, e := range c.entries {
+		if first || e.ExpiresAt.Before(oldestTime) {
+			oldestKey = k
+			oldestTime = e.ExpiresAt
+			first = false
+		}
+	}
+	if oldestKey != "" {
+		delete(c.entries, oldestKey)
 	}
 }
 
