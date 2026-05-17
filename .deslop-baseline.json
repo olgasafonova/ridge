@@ -1,34 +1,46 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-04-25T13:33:48Z",
+  "generated_at": "2026-05-17T00:00:00Z",
   "deslop_version": "2.1.0",
   "scores": {
-    "file_health": 75.0,
-    "test_coverage": 88.6,
+    "file_health": 85.0,
+    "test_coverage": 73.7,
     "secret_detection": 100.0,
     "todo_debt": 100.0,
     "dependency_health": 100.0,
-    "structural_quality": 100.0,
-    "overall": 93.9
+    "structural_quality": 90.0,
+    "overall": 91.4
   },
   "findings": [
     {
       "detector": "file_health",
-      "severity": "high",
-      "key": "tools/handlers.go",
-      "summary": "tools/handlers.go (1,186 LOC)"
+      "severity": "warning",
+      "key": "internal/analyzer/java/analyzer.go",
+      "summary": "internal/analyzer/java/analyzer.go (518 LOC)"
     },
     {
       "detector": "file_health",
       "severity": "warning",
       "key": "internal/analyzer/python/analyzer.go",
-      "summary": "internal/analyzer/python/analyzer.go (513 LOC)"
+      "summary": "internal/analyzer/python/analyzer.go (630 LOC)"
     },
     {
       "detector": "file_health",
       "severity": "warning",
       "key": "internal/analyzer/typescript/analyzer.go",
-      "summary": "internal/analyzer/typescript/analyzer.go (665 LOC)"
+      "summary": "internal/analyzer/typescript/analyzer.go (734 LOC)"
+    },
+    {
+      "detector": "structural_quality",
+      "severity": "warning",
+      "key": "god_package:internal/render",
+      "summary": "internal/render has 21 source files"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "internal/detector/boundary_markers.go",
+      "summary": "internal/detector/boundary_markers.go has no test file"
     },
     {
       "detector": "test_coverage",
@@ -39,14 +51,74 @@
     {
       "detector": "test_coverage",
       "severity": "warning",
-      "key": "internal/scanner/analyzer.go",
-      "summary": "internal/scanner/analyzer.go has no test file"
+      "key": "internal/model/graph_resolver.go",
+      "summary": "internal/model/graph_resolver.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "internal/scanner/scanner_analyze.go",
+      "summary": "internal/scanner/scanner_analyze.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "internal/scanner/scanner_incremental.go",
+      "summary": "internal/scanner/scanner_incremental.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "internal/scanner/scanner_walk.go",
+      "summary": "internal/scanner/scanner_walk.go has no test file"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers.go",
       "summary": "tools/handlers.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_dataflow.go",
+      "summary": "tools/handlers_dataflow.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_deps.go",
+      "summary": "tools/handlers_deps.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_drift.go",
+      "summary": "tools/handlers_drift.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_meta.go",
+      "summary": "tools/handlers_meta.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_registry.go",
+      "summary": "tools/handlers_registry.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_render.go",
+      "summary": "tools/handlers_render.go has no test file"
+    },
+    {
+      "detector": "test_coverage",
+      "severity": "warning",
+      "key": "tools/handlers_validate.go",
+      "summary": "tools/handlers_validate.go has no test file"
     },
     {
       "detector": "test_coverage",
