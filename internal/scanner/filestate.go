@@ -66,43 +66,9 @@ func (s *ScanState) DetectChanges(walkedFiles []string) (*ChangeSet, error) {
 
 	for _, path := range walkedFiles {
 		seen[path] = true
-		prev, exists := s.Files[path]
-
-		if !exists {
-			cs.Added = append(cs.Added, path)
-			continue
-		}
-
-		// Fast path: check mtime first (stat is cheap, hash is not)
-		info, err := os.Stat(path)
-		if err != nil {
-			cs.Added = append(cs.Added, path) // treat stat errors as new
-			continue
-		}
-
-		if info.ModTime().Equal(prev.ModTime) {
-			cs.Unchanged = append(cs.Unchanged, path)
-			continue
-		}
-
-		// mtime changed; check content hash to distinguish real changes from touches
-		hash, err := hashFile(path)
-		if err != nil {
-			cs.Modified = append(cs.Modified, path) // conservative: re-analyze on hash error
-			continue
-		}
-
-		if hash == prev.ContentHash {
-			// File was touched but content is the same; update mtime only
-			prev.ModTime = info.ModTime()
-			cs.Unchanged = append(cs.Unchanged, path)
-			continue
-		}
-
-		cs.Modified = append(cs.Modified, path)
+		s.classifyWalkedFile(path, cs)
 	}
 
-	// Detect deletions: files in state but not in walked set
 	for path := range s.Files {
 		if !seen[path] {
 			cs.Deleted = append(cs.Deleted, path)
@@ -110,6 +76,42 @@ func (s *ScanState) DetectChanges(walkedFiles []string) (*ChangeSet, error) {
 	}
 
 	return cs, nil
+}
+
+// classifyWalkedFile decides whether path belongs in Added, Unchanged, or
+// Modified, and appends it to the appropriate slice on cs.
+func (s *ScanState) classifyWalkedFile(path string, cs *ChangeSet) {
+	prev, exists := s.Files[path]
+	if !exists {
+		cs.Added = append(cs.Added, path)
+		return
+	}
+
+	// Fast path: check mtime first (stat is cheap, hash is not)
+	info, err := os.Stat(path)
+	if err != nil {
+		cs.Added = append(cs.Added, path) // treat stat errors as new
+		return
+	}
+	if info.ModTime().Equal(prev.ModTime) {
+		cs.Unchanged = append(cs.Unchanged, path)
+		return
+	}
+
+	// mtime changed; check content hash to distinguish real changes from touches
+	hash, err := hashFile(path)
+	if err != nil {
+		cs.Modified = append(cs.Modified, path) // conservative: re-analyze on hash error
+		return
+	}
+	if hash == prev.ContentHash {
+		// File was touched but content is the same; update mtime only
+		prev.ModTime = info.ModTime()
+		cs.Unchanged = append(cs.Unchanged, path)
+		return
+	}
+
+	cs.Modified = append(cs.Modified, path)
 }
 
 // UpdateFile records analysis results for a file. The analyzerSig identifies

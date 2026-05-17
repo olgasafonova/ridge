@@ -117,17 +117,40 @@ func ForceGraph(graph *model.ArchGraph, opts Options) string {
 	return sb.String()
 }
 
+// componentInfo carries a connected component's member IDs and its minimum
+// member ID, used to break size-ties when assigning indices.
+type componentInfo struct {
+	members []string
+	minID   string
+}
+
 // connectedComponents labels each node with a component index using
 // undirected union-find on the visible edges. Component 0 is the largest
 // component; smaller components get sequentially higher indices. Indices
 // are stable across runs for a given graph (sorted by size, then by the
 // lowest member ID for tie-breaking).
 func connectedComponents(vg *VisibleGraph) map[string]int {
-	parent := make(map[string]string, len(vg.Nodes))
-	for _, n := range vg.Nodes {
+	parent := initUnionFindParents(vg.Nodes)
+	unionVisibleEdges(parent, vg.Edges)
+
+	groups := groupByRoot(parent, vg.Nodes)
+	infos := makeComponentInfos(groups)
+	sortComponentInfos(infos)
+	return assignComponentIndices(infos, len(vg.Nodes))
+}
+
+// initUnionFindParents seeds the union-find parent map with self-parents.
+func initUnionFindParents(nodes []*model.Node) map[string]string {
+	parent := make(map[string]string, len(nodes))
+	for _, n := range nodes {
 		parent[n.ID] = n.ID
 	}
+	return parent
+}
 
+// unionVisibleEdges unions endpoints of each edge whose endpoints both exist
+// in the parent map. Edges referencing unknown nodes are skipped.
+func unionVisibleEdges(parent map[string]string, edges []*model.Edge) {
 	find := func(x string) string {
 		for parent[x] != x {
 			parent[x] = parent[parent[x]]
@@ -135,51 +158,79 @@ func connectedComponents(vg *VisibleGraph) map[string]int {
 		}
 		return x
 	}
-	union := func(a, b string) {
-		ra, rb := find(a), find(b)
+	for _, e := range edges {
+		if !edgeEndpointsKnown(parent, e) {
+			continue
+		}
+		ra, rb := find(e.Source), find(e.Target)
 		if ra != rb {
 			parent[ra] = rb
 		}
 	}
-	for _, e := range vg.Edges {
-		if _, ok := parent[e.Source]; !ok {
-			continue
-		}
-		if _, ok := parent[e.Target]; !ok {
-			continue
-		}
-		union(e.Source, e.Target)
-	}
+}
 
+// edgeEndpointsKnown reports whether both endpoints of the edge exist in the
+// parent map.
+func edgeEndpointsKnown(parent map[string]string, e *model.Edge) bool {
+	if _, ok := parent[e.Source]; !ok {
+		return false
+	}
+	_, ok := parent[e.Target]
+	return ok
+}
+
+// groupByRoot collects each node ID under its union-find root.
+func groupByRoot(parent map[string]string, nodes []*model.Node) map[string][]string {
+	find := func(x string) string {
+		for parent[x] != x {
+			parent[x] = parent[parent[x]]
+			x = parent[x]
+		}
+		return x
+	}
 	groups := make(map[string][]string)
-	for _, n := range vg.Nodes {
+	for _, n := range nodes {
 		root := find(n.ID)
 		groups[root] = append(groups[root], n.ID)
 	}
+	return groups
+}
 
-	type compInfo struct {
-		members []string
-		minID   string
-	}
-	infos := make([]compInfo, 0, len(groups))
+// makeComponentInfos builds componentInfo records (members + minID) for each
+// group.
+func makeComponentInfos(groups map[string][]string) []componentInfo {
+	infos := make([]componentInfo, 0, len(groups))
 	for _, members := range groups {
-		minID := members[0]
-		for _, m := range members[1:] {
-			if m < minID {
-				minID = m
-			}
-		}
-		infos = append(infos, compInfo{members: members, minID: minID})
+		infos = append(infos, componentInfo{members: members, minID: minMemberID(members)})
 	}
-	// Largest component first; ties broken by lowest member ID.
+	return infos
+}
+
+// minMemberID returns the lexicographically smallest ID in the slice. The
+// slice must be non-empty.
+func minMemberID(members []string) string {
+	minID := members[0]
+	for _, m := range members[1:] {
+		if m < minID {
+			minID = m
+		}
+	}
+	return minID
+}
+
+// sortComponentInfos orders by size descending, then by minID ascending.
+func sortComponentInfos(infos []componentInfo) {
 	sort.Slice(infos, func(i, j int) bool {
 		if len(infos[i].members) != len(infos[j].members) {
 			return len(infos[i].members) > len(infos[j].members)
 		}
 		return infos[i].minID < infos[j].minID
 	})
+}
 
-	out := make(map[string]int, len(vg.Nodes))
+// assignComponentIndices maps each node ID to its component's index in infos.
+func assignComponentIndices(infos []componentInfo, nodeCount int) map[string]int {
+	out := make(map[string]int, nodeCount)
 	for i, info := range infos {
 		for _, id := range info.members {
 			out[id] = i

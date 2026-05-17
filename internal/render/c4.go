@@ -23,45 +23,56 @@ func C4(graph *model.ArchGraph, opts Options) string {
 	sb.WriteString("!include <C4/C4_Container>\n\n")
 	fmt.Fprintf(&sb, "title %s\n\n", title)
 
-	// External systems go outside the boundary
-	var externals []*model.Node
-	var internals []*model.Node
-	for _, n := range vg.Nodes {
+	externals, internals := splitExternalInternal(vg.Nodes)
+	writeC4Externals(&sb, externals)
+	writeC4Internals(&sb, internals)
+	writeC4Relationships(&sb, vg)
+
+	sb.WriteString("\n@enduml\n")
+	return sb.String()
+}
+
+// splitExternalInternal partitions nodes into external-API and everything else.
+func splitExternalInternal(nodes []*model.Node) (externals, internals []*model.Node) {
+	for _, n := range nodes {
 		if n.Type == model.NodeExternalAPI {
 			externals = append(externals, n)
 		} else {
 			internals = append(internals, n)
 		}
 	}
+	return externals, internals
+}
 
-	// Render external systems
+// writeC4Externals renders System_Ext blocks for external systems.
+func writeC4Externals(sb *strings.Builder, externals []*model.Node) {
 	for _, n := range externals {
-		id := SanitizeID(n.ID)
-		fmt.Fprintf(&sb, "System_Ext(%s, \"%s\")\n", id, n.Name)
+		fmt.Fprintf(sb, "System_Ext(%s, \"%s\")\n", SanitizeID(n.ID), n.Name)
 	}
 	if len(externals) > 0 {
 		sb.WriteString("\n")
 	}
+}
 
-	// Render system boundary with internals
-	if len(internals) > 0 {
-		sb.WriteString("System_Boundary(system, \"System\") {\n")
-		for _, n := range internals {
-			id := SanitizeID(n.ID)
-			c4Element(&sb, n, id)
-		}
-		sb.WriteString("}\n\n")
+// writeC4Internals renders the system boundary with internal containers.
+func writeC4Internals(sb *strings.Builder, internals []*model.Node) {
+	if len(internals) == 0 {
+		return
 	}
+	sb.WriteString("System_Boundary(system, \"System\") {\n")
+	for _, n := range internals {
+		c4Element(sb, n, SanitizeID(n.ID))
+	}
+	sb.WriteString("}\n\n")
+}
 
-	// Render relationships
+// writeC4Relationships renders Rel() lines for each edge.
+func writeC4Relationships(sb *strings.Builder, vg *VisibleGraph) {
 	for _, e := range vg.Edges {
 		label := EdgeLabel(e, vg.Names[e.Target])
-		fmt.Fprintf(&sb, "Rel(%s, %s, \"%s\")\n",
+		fmt.Fprintf(sb, "Rel(%s, %s, \"%s\")\n",
 			SanitizeID(e.Source), SanitizeID(e.Target), label)
 	}
-
-	sb.WriteString("\n@enduml\n")
-	return sb.String()
 }
 
 func c4Element(sb *strings.Builder, n *model.Node, id string) {

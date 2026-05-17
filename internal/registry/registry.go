@@ -71,31 +71,46 @@ func Load() (*Registry, error) {
 		return nil, err
 	}
 
-	path := filepath.Join(dir, registryFile)
-	reg, err := infra.LoadJSON[Registry](path)
+	reg, err := loadRegistryFile(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &Registry{
-				Version: "1",
-				Repos:   make(map[string]Repo),
-				dir:     dir,
-			}, nil
-		}
-		return nil, fmt.Errorf("loading registry: %w", err)
+		return nil, err
 	}
 	reg.dir = dir
 	if reg.Repos == nil {
 		reg.Repos = make(map[string]Repo)
 	}
-	// Defense in depth: drop entries whose aliases would not pass current
-	// validation. A registry file written before tightening (or tampered
-	// externally) cannot trick StatePath into writing outside the state dir.
-	for alias := range reg.Repos {
+	dropInvalidAliases(reg.Repos)
+	return reg, nil
+}
+
+// loadRegistryFile reads the registry JSON, returning a fresh empty registry if
+// the file doesn't exist.
+func loadRegistryFile(dir string) (*Registry, error) {
+	path := filepath.Join(dir, registryFile)
+	reg, err := infra.LoadJSON[Registry](path)
+	if err == nil {
+		return reg, nil
+	}
+	if os.IsNotExist(err) {
+		return &Registry{
+			Version: "1",
+			Repos:   make(map[string]Repo),
+			dir:     dir,
+		}, nil
+	}
+	return nil, fmt.Errorf("loading registry: %w", err)
+}
+
+// dropInvalidAliases removes entries whose aliases would not pass current
+// validation. Defense in depth against a registry file written before alias
+// tightening (or tampered externally): such entries cannot trick StatePath
+// into writing outside the state dir.
+func dropInvalidAliases(repos map[string]Repo) {
+	for alias := range repos {
 		if err := ValidateAlias(alias); err != nil {
-			delete(reg.Repos, alias)
+			delete(repos, alias)
 		}
 	}
-	return reg, nil
 }
 
 // Save writes the registry to disk.

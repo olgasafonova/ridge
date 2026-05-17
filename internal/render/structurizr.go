@@ -22,56 +22,56 @@ func Structurizr(graph *model.ArchGraph, opts Options) string {
 	sb.WriteString("workspace {\n")
 	sb.WriteString("    model {\n")
 
-	// External systems
-	var externals []*model.Node
-	var internals []*model.Node
-	for _, n := range vg.Nodes {
-		if n.Type == model.NodeExternalAPI {
-			externals = append(externals, n)
-		} else {
-			internals = append(internals, n)
-		}
-	}
+	externals, internals := splitExternalInternal(vg.Nodes)
+	writeStructurizrExternals(&sb, externals)
+	writeStructurizrSystem(&sb, title, internals)
+	writeStructurizrRelationships(&sb, vg)
 
+	sb.WriteString("    }\n") // end model
+	writeStructurizrViews(&sb)
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+// writeStructurizrExternals renders softwareSystem blocks for external systems.
+func writeStructurizrExternals(sb *strings.Builder, externals []*model.Node) {
 	for _, n := range externals {
-		id := SanitizeID(n.ID)
-		fmt.Fprintf(&sb, "        %s = softwareSystem \"%s\" {\n", id, n.Name)
+		fmt.Fprintf(sb, "        %s = softwareSystem \"%s\" {\n", SanitizeID(n.ID), n.Name)
 		sb.WriteString("            tags \"External\"\n")
 		sb.WriteString("        }\n")
 	}
+}
 
-	// Software system with containers
-	fmt.Fprintf(&sb, "        system = softwareSystem \"%s\" {\n", title)
+// writeStructurizrSystem renders the main software system with its containers.
+func writeStructurizrSystem(sb *strings.Builder, title string, internals []*model.Node) {
+	fmt.Fprintf(sb, "        system = softwareSystem \"%s\" {\n", title)
 	for _, n := range internals {
-		id := SanitizeID(n.ID)
-		structurizrContainer(&sb, n, id)
+		structurizrContainer(sb, n, SanitizeID(n.ID))
 	}
 	sb.WriteString("        }\n")
+}
 
-	// Relationships
+// writeStructurizrRelationships renders edge relationships.
+func writeStructurizrRelationships(sb *strings.Builder, vg *VisibleGraph) {
 	for _, e := range vg.Edges {
 		label := EdgeLabel(e, vg.Names[e.Target])
+		src, tgt := SanitizeID(e.Source), SanitizeID(e.Target)
 		if label != "" {
-			fmt.Fprintf(&sb, "        %s -> %s \"%s\"\n",
-				SanitizeID(e.Source), SanitizeID(e.Target), label)
+			fmt.Fprintf(sb, "        %s -> %s \"%s\"\n", src, tgt, label)
 		} else {
-			fmt.Fprintf(&sb, "        %s -> %s\n",
-				SanitizeID(e.Source), SanitizeID(e.Target))
+			fmt.Fprintf(sb, "        %s -> %s\n", src, tgt)
 		}
 	}
+}
 
-	sb.WriteString("    }\n") // end model
-
-	// Views
+// writeStructurizrViews renders the standard view block.
+func writeStructurizrViews(sb *strings.Builder) {
 	sb.WriteString("    views {\n")
 	sb.WriteString("        container system {\n")
 	sb.WriteString("            include *\n")
 	sb.WriteString("            autoLayout\n")
 	sb.WriteString("        }\n")
 	sb.WriteString("    }\n")
-
-	sb.WriteString("}\n")
-	return sb.String()
 }
 
 func structurizrContainer(sb *strings.Builder, n *model.Node, id string) {

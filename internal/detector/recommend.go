@@ -48,34 +48,42 @@ func RecommendArchitecture(
 
 // recommendBreakCycles suggests breaking circular dependencies found by Tarjan SCC.
 func recommendBreakCycles(graph *model.ArchGraph, violations []Violation) []Recommendation {
-	// Check if any cycle violations exist.
-	hasCycle := false
-	for _, v := range violations {
-		if v.Rule == "no_circular_dependencies" {
-			hasCycle = true
-			break
-		}
-	}
-	if !hasCycle {
+	if !hasCycleViolation(violations) {
 		return nil
 	}
 
-	sccs := tarjanSCC(graph)
 	var recs []Recommendation
-	for _, scc := range sccs {
-		if len(scc) <= 1 {
-			continue
+	for _, scc := range tarjanSCC(graph) {
+		if rec, ok := breakCycleRec(scc); ok {
+			recs = append(recs, rec)
 		}
-		recs = append(recs, Recommendation{
-			Category:  "break_cycle",
-			Priority:  "high",
-			Subject:   scc,
-			Title:     fmt.Sprintf("Break circular dependency among %d components", len(scc)),
-			Rationale: fmt.Sprintf("Components %s form a cycle, preventing independent deployment and testing.", strings.Join(scc, ", ")),
-			Action:    "Introduce an interface or event-based decoupling to break the dependency loop.",
-		})
 	}
 	return recs
+}
+
+// hasCycleViolation reports whether the violations slice contains a cycle rule.
+func hasCycleViolation(violations []Violation) bool {
+	for _, v := range violations {
+		if v.Rule == "no_circular_dependencies" {
+			return true
+		}
+	}
+	return false
+}
+
+// breakCycleRec builds a break-cycle recommendation for one SCC.
+func breakCycleRec(scc []string) (Recommendation, bool) {
+	if len(scc) <= 1 {
+		return Recommendation{}, false
+	}
+	return Recommendation{
+		Category:  "break_cycle",
+		Priority:  "high",
+		Subject:   scc,
+		Title:     fmt.Sprintf("Break circular dependency among %d components", len(scc)),
+		Rationale: fmt.Sprintf("Components %s form a cycle, preventing independent deployment and testing.", strings.Join(scc, ", ")),
+		Action:    "Introduce an interface or event-based decoupling to break the dependency loop.",
+	}, true
 }
 
 // recommendReduceCoupling flags nodes with coupling more than 2× the average,
@@ -88,26 +96,35 @@ func recommendReduceCoupling(graph *model.ArchGraph, metrics *Metrics) []Recomme
 	threshold := metrics.AvgCoupling * 2
 	var recs []Recommendation
 	for _, n := range graph.Nodes() {
-		if isInfraNode(n.Type) {
-			continue
-		}
-		coupling := metrics.Coupling[n.ID]
-		if coupling > threshold {
-			priority := "medium"
-			if coupling > threshold*1.5 {
-				priority = "high"
-			}
-			recs = append(recs, Recommendation{
-				Category:  "reduce_coupling",
-				Priority:  priority,
-				Subject:   []string{n.ID},
-				Title:     fmt.Sprintf("Reduce coupling of %s (fan-out %.0f, avg %.1f)", n.Name, coupling, metrics.AvgCoupling),
-				Rationale: fmt.Sprintf("Component %q has %.0f outgoing dependencies, more than 2× the project average of %.1f.", n.Name, coupling, metrics.AvgCoupling),
-				Action:    "Extract shared dependencies into a facade or split into smaller focused modules.",
-			})
+		if rec, ok := reduceCouplingRec(n, metrics, threshold); ok {
+			recs = append(recs, rec)
 		}
 	}
 	return recs
+}
+
+// reduceCouplingRec builds a reduce-coupling recommendation for one node when its
+// coupling exceeds the threshold. Returns false for infra nodes or below-threshold.
+func reduceCouplingRec(n *model.Node, metrics *Metrics, threshold float64) (Recommendation, bool) {
+	if isInfraNode(n.Type) {
+		return Recommendation{}, false
+	}
+	coupling := metrics.Coupling[n.ID]
+	if coupling <= threshold {
+		return Recommendation{}, false
+	}
+	priority := "medium"
+	if coupling > threshold*1.5 {
+		priority = "high"
+	}
+	return Recommendation{
+		Category:  "reduce_coupling",
+		Priority:  priority,
+		Subject:   []string{n.ID},
+		Title:     fmt.Sprintf("Reduce coupling of %s (fan-out %.0f, avg %.1f)", n.Name, coupling, metrics.AvgCoupling),
+		Rationale: fmt.Sprintf("Component %q has %.0f outgoing dependencies, more than 2× the project average of %.1f.", n.Name, coupling, metrics.AvgCoupling),
+		Action:    "Extract shared dependencies into a facade or split into smaller focused modules.",
+	}, true
 }
 
 // recommendStabilizeCore flags nodes that are heavily depended upon (fan-in > 3)
@@ -118,33 +135,35 @@ func recommendStabilizeCore(graph *model.ArchGraph, metrics *Metrics) []Recommen
 		return nil
 	}
 
-	// Build fan-in map from resolved edges.
-	fanIn := make(map[string]int)
-	for _, e := range graph.ResolvedEdges() {
-		if e.Type == model.EdgeDependency {
-			fanIn[e.Target]++
-		}
-	}
-
+	fanIn := buildFanIn(graph)
 	var recs []Recommendation
 	for _, n := range graph.Nodes() {
-		if isInfraNode(n.Type) {
-			continue
-		}
-		fi := fanIn[n.ID]
-		inst := metrics.Instability[n.ID]
-		if fi > 3 && inst > 0.7 {
-			recs = append(recs, Recommendation{
-				Category:  "stabilize_core",
-				Priority:  "high",
-				Subject:   []string{n.ID},
-				Title:     fmt.Sprintf("Stabilize %s (fan-in %d, instability %.2f)", n.Name, fi, inst),
-				Rationale: fmt.Sprintf("Component %q is depended on by %d others but has instability %.2f. Changes here ripple widely.", n.Name, fi, inst),
-				Action:    "Reduce outgoing dependencies or extract a stable interface that dependents can rely on.",
-			})
+		if rec, ok := stabilizeCoreRec(n, metrics, fanIn); ok {
+			recs = append(recs, rec)
 		}
 	}
 	return recs
+}
+
+// stabilizeCoreRec builds a stabilize-core recommendation for one node when it has
+// high fan-in and high instability. Returns false for infra nodes or below threshold.
+func stabilizeCoreRec(n *model.Node, metrics *Metrics, fanIn map[string]int) (Recommendation, bool) {
+	if isInfraNode(n.Type) {
+		return Recommendation{}, false
+	}
+	fi := fanIn[n.ID]
+	inst := metrics.Instability[n.ID]
+	if fi <= 3 || inst <= 0.7 {
+		return Recommendation{}, false
+	}
+	return Recommendation{
+		Category:  "stabilize_core",
+		Priority:  "high",
+		Subject:   []string{n.ID},
+		Title:     fmt.Sprintf("Stabilize %s (fan-in %d, instability %.2f)", n.Name, fi, inst),
+		Rationale: fmt.Sprintf("Component %q is depended on by %d others but has instability %.2f. Changes here ripple widely.", n.Name, fi, inst),
+		Action:    "Reduce outgoing dependencies or extract a stable interface that dependents can rely on.",
+	}, true
 }
 
 // recommendAddServiceLayer detects endpoint-to-database layering violations.
@@ -260,33 +279,49 @@ func recommendRemoveOrphans(_ *model.ArchGraph, violations []Violation) []Recomm
 // boostPriorities upgrades medium→high for nodes that have high fan-in (many
 // dependents affected) or are flagged by multiple rules (compound risk).
 func boostPriorities(recs []Recommendation, graph *model.ArchGraph) {
-	// Build fan-in map.
+	fanIn := buildFanIn(graph)
+	subjectCount := countSubjectFlags(recs)
+
+	for i := range recs {
+		if recs[i].Priority != "medium" {
+			continue
+		}
+		if shouldBoost(recs[i].Subject, fanIn, subjectCount) {
+			recs[i].Priority = "high"
+		}
+	}
+}
+
+// buildFanIn counts incoming dependency edges per target node.
+func buildFanIn(graph *model.ArchGraph) map[string]int {
 	fanIn := make(map[string]int)
 	for _, e := range graph.ResolvedEdges() {
 		if e.Type == model.EdgeDependency {
 			fanIn[e.Target]++
 		}
 	}
+	return fanIn
+}
 
-	// Count how many rules flag each subject node.
+// countSubjectFlags counts how many rules flag each subject node.
+func countSubjectFlags(recs []Recommendation) map[string]int {
 	subjectCount := make(map[string]int)
 	for _, r := range recs {
 		for _, s := range r.Subject {
 			subjectCount[s]++
 		}
 	}
+	return subjectCount
+}
 
-	for i := range recs {
-		if recs[i].Priority != "medium" {
-			continue
-		}
-		for _, s := range recs[i].Subject {
-			if fanIn[s] > 3 || subjectCount[s] > 1 {
-				recs[i].Priority = "high"
-				break
-			}
+// shouldBoost reports whether any subject has high fan-in or compound risk.
+func shouldBoost(subjects []string, fanIn, subjectCount map[string]int) bool {
+	for _, s := range subjects {
+		if fanIn[s] > 3 || subjectCount[s] > 1 {
+			return true
 		}
 	}
+	return false
 }
 
 // sortRecommendations orders by priority (high > medium > low), then by
