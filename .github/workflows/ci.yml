@@ -95,12 +95,6 @@ jobs:
           if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
           go build -ldflags="-s -w" -o code-to-arch-${GOOS}-${GOARCH}${ext} ./cmd/ridge
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: code-to-arch-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: code-to-arch-*
-
   lint:
     runs-on: ubuntu-latest
     steps:
