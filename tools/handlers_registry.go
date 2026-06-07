@@ -14,8 +14,8 @@ import (
 // =============================================================================
 
 type ArchRegistryAddArgs struct {
-	Path  string `json:"path"`
-	Alias string `json:"alias,omitempty"`
+	Path  string `json:"path" jsonschema:"Absolute filesystem path to the codebase directory to register. Must exist and be a directory."`
+	Alias string `json:"alias,omitempty" jsonschema:"Optional short name used to refer to this repo in later tool calls. Defaults to the directory basename when omitted. Must be unique across registered repos."`
 }
 
 type ArchRegistryAddResult struct {
@@ -67,7 +67,7 @@ func (h *HandlerRegistry) archRegistryAdd(_ context.Context, args ArchRegistryAd
 // =============================================================================
 
 type ArchRegistryRemoveArgs struct {
-	Alias string `json:"alias"`
+	Alias string `json:"alias" jsonschema:"Short name of a previously registered repo to remove. Run arch_registry_list to see available aliases. Also deletes any persisted incremental scan state for the alias."`
 }
 
 type ArchRegistryRemoveResult struct {
