@@ -28,7 +28,7 @@ var AllTools = []ToolSpec{
 USE WHEN the user wants to understand the overall architecture of a project,
 discover services, dependencies, and infrastructure components.
 Also works on markdown directories (Obsidian vaults, doc trees) — each note becomes a node, wiki-links [[note]] and relative .md links become dependency edges.
-Returns a summary by default; set detail="full" for the complete node/edge graph.
+Returns a summary by default; set detail="full" for the node/edge graph (capped at 1000 nodes and 1000 edges to bound response size; raise via max_detail_nodes, and check truncated in the response to know when the graph was clipped).
 Pair detail="full" with samples=true to populate each file-backed node's source field with a few representative code lines (default 6, override via sample_lines) — useful for agents that want code context without a separate file Read round-trip.
 For a single service or subdirectory, use arch_focus instead.
 Pass paths (array of strings) instead of path to scan multiple directories and merge into a single graph — each node carries a source field recording which scan root produced it. Use this for cross-substrate analysis (code + docs + vault in one graph). paths and path/repo are mutually exclusive; passing both returns a validation error.

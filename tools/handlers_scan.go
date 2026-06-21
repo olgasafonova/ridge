@@ -111,12 +111,13 @@ func (h *HandlerRegistry) scanPath(ctx context.Context, path, alias string, sc S
 
 // ArchScanArgs are the arguments for arch_scan.
 type ArchScanArgs struct {
-	Path        string   `json:"path"`
-	Paths       []string `json:"paths,omitempty"`
-	Repo        string   `json:"repo,omitempty"`
-	Detail      string   `json:"detail,omitempty"`       // "summary" (default) or "full"
-	Samples     bool     `json:"samples,omitempty"`      // when true, populate Node.Source with N source lines for file-backed nodes
-	SampleLines int      `json:"sample_lines,omitempty"` // lines per sample (default 6); requires samples=true
+	Path           string   `json:"path"`
+	Paths          []string `json:"paths,omitempty"`
+	Repo           string   `json:"repo,omitempty"`
+	Detail         string   `json:"detail,omitempty"`           // "summary" (default) or "full"
+	Samples        bool     `json:"samples,omitempty"`          // when true, populate Node.Source with N source lines for file-backed nodes
+	SampleLines    int      `json:"sample_lines,omitempty"`     // lines per sample (default 6); requires samples=true
+	MaxDetailNodes int      `json:"max_detail_nodes,omitempty"` // cap on nodes/edges emitted when detail="full" (default 1000); results past the cap set truncated=true
 	ScanControl
 }
 
@@ -193,6 +194,7 @@ func (h *HandlerRegistry) archScanSingle(ctx context.Context, args ArchScanArgs)
 		graph.RelativePaths()
 		res.Nodes = graph.Nodes()
 		res.Edges = graph.Edges()
+		clipFullDetail(res, args.MaxDetailNodes)
 	}
 
 	return res, nil
@@ -214,6 +216,7 @@ func (h *HandlerRegistry) archScanMulti(ctx context.Context, args ArchScanArgs) 
 	res := summaryResult(merged, &totalStats, truncated)
 	if strings.EqualFold(args.Detail, "full") {
 		populateFullDetail(res, merged, args.Samples, args.SampleLines)
+		clipFullDetail(res, args.MaxDetailNodes)
 	}
 	return res, nil
 }
@@ -263,6 +266,32 @@ func populateFullDetail(res *ArchScanResult, merged *model.ArchGraph, samples bo
 	}
 	res.Nodes = merged.Nodes()
 	res.Edges = merged.Edges()
+}
+
+// maxFullDetailNodes bounds the node/edge slices emitted by arch_scan
+// detail="full". A scan of a large repo produces an unbounded graph; emitting
+// it whole blows the caller's context (HG-2 cost-lens). Callers can raise the
+// bound via max_detail_nodes. This is an emit-side cap only — the scan, graph,
+// cache keys and incremental state are left untouched, and NodeCount/EdgeCount
+// still report the true totals.
+const maxFullDetailNodes = 1000
+
+// clipFullDetail bounds res.Nodes/res.Edges to limit (falling back to
+// maxFullDetailNodes when limit <= 0), flagging Truncated when anything is
+// dropped. Edges are capped independently of nodes; in a truncated full dump
+// some edges may reference clipped nodes, which Truncated=true signals.
+func clipFullDetail(res *ArchScanResult, limit int) {
+	if limit <= 0 {
+		limit = maxFullDetailNodes
+	}
+	if len(res.Nodes) > limit {
+		res.Nodes = res.Nodes[:limit]
+		res.Truncated = true
+	}
+	if len(res.Edges) > limit {
+		res.Edges = res.Edges[:limit]
+		res.Truncated = true
+	}
 }
 
 // =============================================================================
