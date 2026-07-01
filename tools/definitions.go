@@ -120,7 +120,8 @@ FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first). Ret
 USE WHEN the user wants to understand how the codebase is divided,
 whether it's a monolith, monorepo, or microservices.
 Detects boundaries from go.mod/package.json, cmd/ directories, Dockerfiles, and k8s manifests.
-WHY: Infers boundaries from conventional markers. Projects without go.mod, package.json, Dockerfiles, or k8s manifests produce weaker boundary detection and may report "unknown" topology.
+Returns "signals" (the marker counts and workspace/orchestration flags behind the verdict), "reason" (which rule fired), and "ambiguous" (true when the topology is a borderline/fallback call) so the classification can be verified, not just trusted.
+WHY: Infers boundaries from conventional markers. Projects without go.mod, package.json, Dockerfiles, or k8s manifests produce weaker boundary detection and may report "unknown" topology (flagged ambiguous).
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
 		Category:   "analysis",
 		ReadOnly:   true,
@@ -243,6 +244,7 @@ FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
 		Description: `Analyze architecture and recommend specific improvements with priorities.
 USE WHEN the user asks "how should I improve this?" or "what should the architecture look like?"
 Combines validation, metrics, and pattern analysis to produce actionable recommendations.
+Each recommendation carries "evidence" (the triggering metric readings — value + threshold + node, e.g. instability 0.82 vs 0.70) and a "confidence" grade (high/medium/low), so a caller can verify why it fired instead of trusting the prose rationale.
 For just violations, use arch_validate. For just metrics, use arch_metrics.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
 		Category:   "validation",

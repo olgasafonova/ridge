@@ -34,6 +34,66 @@ func TestDetectBoundaries_Monolith(t *testing.T) {
 	}
 }
 
+// TestDetectBoundaries_SignalsAndReason is the design-for-verifiability check for
+// the topology verdict: a confident call exposes the signals behind it, a reason,
+// and is not flagged ambiguous.
+func TestDetectBoundaries_SignalsAndReason(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "go.mod", "module example.com/app\ngo 1.22\n")
+	writeFile(t, dir, "main.go", "package main\nfunc main() {}\n")
+
+	result, err := DetectBoundaries(dir)
+	if err != nil {
+		t.Fatalf("DetectBoundaries failed: %v", err)
+	}
+	if result.Signals.GoModules != 1 {
+		t.Errorf("signals.GoModules: want 1, got %d", result.Signals.GoModules)
+	}
+	if result.Reason == "" {
+		t.Error("expected a non-empty reason behind the verdict")
+	}
+	if result.Ambiguous {
+		t.Errorf("single-manifest monolith should not be ambiguous; reason=%q", result.Reason)
+	}
+}
+
+// TestDetectBoundaries_CatchAllIsAmbiguous: several manifests, no stronger signal
+// → the verdict comes from the weak catch-all branch and must be flagged ambiguous.
+func TestDetectBoundaries_CatchAllIsAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a/Cargo.toml", "[package]\nname='a'\n")
+	writeFile(t, dir, "b/Cargo.toml", "[package]\nname='b'\n")
+	writeFile(t, dir, "c/Cargo.toml", "[package]\nname='c'\n")
+
+	result, err := DetectBoundaries(dir)
+	if err != nil {
+		t.Fatalf("DetectBoundaries failed: %v", err)
+	}
+	if result.Signals.TotalProjectMarkers != 3 {
+		t.Errorf("TotalProjectMarkers: want 3, got %d", result.Signals.TotalProjectMarkers)
+	}
+	if !result.Ambiguous {
+		t.Errorf("catch-all verdict should be ambiguous; topology=%s reason=%q", result.Topology, result.Reason)
+	}
+}
+
+// TestDetectBoundaries_UnknownIsAmbiguous: no recognizable markers → unknown, ambiguous.
+func TestDetectBoundaries_UnknownIsAmbiguous(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "README.md", "# hi\n")
+
+	result, err := DetectBoundaries(dir)
+	if err != nil {
+		t.Fatalf("DetectBoundaries failed: %v", err)
+	}
+	if result.Topology != model.TopologyUnknown {
+		t.Fatalf("expected unknown, got %s", result.Topology)
+	}
+	if !result.Ambiguous {
+		t.Error("unknown topology must be flagged ambiguous")
+	}
+}
+
 func TestDetectBoundaries_Monorepo_GoWork(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "go.work", "go 1.22\nuse ./svc-a\nuse ./svc-b\n")

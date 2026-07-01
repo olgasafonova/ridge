@@ -2,6 +2,7 @@
 package detector
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,24 @@ import (
 type BoundaryResult struct {
 	Topology   model.TopologyType
 	Boundaries []Boundary
+	Signals    TopologySignals // the counts/flags that drove the topology verdict
+	Reason     string          // which rule fired, in plain language
+	Ambiguous  bool            // true when the verdict is a fallback or a near-miss
+}
+
+// TopologySignals is the exported, falsifiable evidence behind the topology
+// verdict: the marker counts and workspace/orchestration flags inferTopology
+// reasons over. Surfacing it lets a consumer re-derive the verdict instead of
+// trusting the label.
+type TopologySignals struct {
+	GoModules           int  `json:"go_modules"`
+	PackageJSONs        int  `json:"package_jsons"`
+	Dockerfiles         int  `json:"dockerfiles"`
+	CmdDirs             int  `json:"cmd_dirs"`
+	TotalProjectMarkers int  `json:"total_project_markers"`
+	HasWorkspaceConfig  bool `json:"has_workspace_config"`
+	HasDockerCompose    bool `json:"has_docker_compose"`
+	HasK8s              bool `json:"has_k8s"`
 }
 
 // Boundary represents a detected service or module boundary.
@@ -62,8 +81,13 @@ func DetectBoundaries(rootPath string) (*BoundaryResult, error) {
 		return nil, err
 	}
 
+	signal := markers.toSignal()
+	topology, reason, ambiguous := inferTopology(signal)
 	result := &BoundaryResult{
-		Topology: inferTopology(markers.toSignal()),
+		Topology:  topology,
+		Signals:   signal.export(),
+		Reason:    reason,
+		Ambiguous: ambiguous,
 	}
 
 	result.Boundaries = buildBoundaries(result.Boundaries, absRoot, markers)
@@ -273,16 +297,46 @@ func (s topologySignal) isSingleProjectMonolith() bool {
 	return (s.goModCount == 1 || s.pkgJSONCount == 1) && s.dockerfileCount <= 1
 }
 
-func inferTopology(s topologySignal) model.TopologyType {
-	switch {
-	case s.hasWorkspaceConfig(), s.goModCount > 1:
-		return model.TopologyMonorepo
-	case s.hasOrchestratedMicroservices(), s.dockerfileCount > 2:
-		return model.TopologyMicroservice
-	case s.cmdCount > 1, s.totalProjectMarkers > 2:
-		return model.TopologyMonorepo
-	case s.isSingleProjectMonolith():
-		return model.TopologyMonolith
+// export projects the internal signal onto the public, JSON-serializable shape.
+func (s topologySignal) export() TopologySignals {
+	return TopologySignals{
+		GoModules:           s.goModCount,
+		PackageJSONs:        s.pkgJSONCount,
+		Dockerfiles:         s.dockerfileCount,
+		CmdDirs:             s.cmdCount,
+		TotalProjectMarkers: s.totalProjectMarkers,
+		HasWorkspaceConfig:  s.hasWorkspaceConfig(),
+		HasDockerCompose:    s.hasDockerCompose,
+		HasK8s:              s.hasK8s,
 	}
-	return model.TopologyUnknown
+}
+
+// inferTopology returns the topology verdict, the plain-language reason for it,
+// and whether the verdict is ambiguous. Ambiguity fires when the verdict came
+// from a weak catch-all branch or when a competing topology was a near-miss, so
+// a consumer can treat a borderline call with appropriate caution rather than as
+// a confident classification. Branch order is significant and unchanged.
+func inferTopology(s topologySignal) (topology model.TopologyType, reason string, ambiguous bool) {
+	switch {
+	case s.hasWorkspaceConfig():
+		return model.TopologyMonorepo, "workspace config present (go.work / nx / turbo / rush / pnpm)", false
+	case s.goModCount > 1:
+		return model.TopologyMonorepo, fmt.Sprintf("%d go modules (>1)", s.goModCount), false
+	case s.hasOrchestratedMicroservices():
+		return model.TopologyMicroservice,
+			fmt.Sprintf("%d Dockerfiles with orchestration (compose/k8s)", s.dockerfileCount), false
+	case s.dockerfileCount > 2:
+		return model.TopologyMicroservice, fmt.Sprintf("%d Dockerfiles (>2), no orchestration", s.dockerfileCount), false
+	case s.cmdCount > 1:
+		return model.TopologyMonorepo, fmt.Sprintf("%d cmd/ subdirectories (>1)", s.cmdCount), false
+	case s.totalProjectMarkers > 2:
+		// Catch-all: several manifests but none of the stronger rules fired.
+		return model.TopologyMonorepo,
+			fmt.Sprintf("catch-all: %d project markers (>2), no stronger signal", s.totalProjectMarkers), true
+	case s.isSingleProjectMonolith():
+		return model.TopologyMonolith, "single project manifest, <=1 Dockerfile", false
+	}
+	// Fallback: no rule matched. Includes the near-microservice case of exactly
+	// 2 Dockerfiles without orchestration, which clears no stronger threshold.
+	return model.TopologyUnknown, "no recognizable topology signal", true
 }
