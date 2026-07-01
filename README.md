@@ -105,7 +105,7 @@ Once configured, ask your LLM:
 | `arch_drift_explain` | Compare two refs and return a 2-5 sentence narrative summary plus the structured diff — paste-ready for PR descriptions |
 | `arch_dataflow` | Trace data flow from endpoints to data stores with structured process traces |
 | `arch_validate` | Check for circular dependencies, orphan nodes, and layering violations |
-| `arch_recommend` | Produce prioritized architecture improvement recommendations |
+| `arch_recommend` | Produce prioritized architecture improvement recommendations, each carrying the triggering metric evidence (value + threshold + node) and a confidence grade |
 
 ### All 19 tools
 
@@ -116,7 +116,7 @@ Once configured, ask your LLM:
 | `arch_dependencies` | analysis | Map internal, external, and infrastructure dependencies |
 | `arch_blast_radius` | analysis | Find the transitive set of nodes that depend on a target file or package |
 | `arch_dataflow` | analysis | Trace data flow with entry-to-terminal process traces and confidence scores |
-| `arch_boundaries` | analysis | Detect service boundaries and topology (monolith, monorepo, microservices) |
+| `arch_boundaries` | analysis | Detect service boundaries and topology (monolith, monorepo, microservices), with the signals behind the verdict, the reason it fired, and an ambiguity flag for borderline calls |
 | `arch_explain` | analysis | Explain topology, patterns, key decisions, and risks with code evidence |
 | `arch_generate` | diagram | Generate a diagram in 9 formats |
 | `arch_diff` | drift | Compare current architecture against a saved baseline |
@@ -124,7 +124,7 @@ Once configured, ask your LLM:
 | `arch_drift_explain` | drift | Narrative summary of drift between two git refs (paste-ready prose) |
 | `arch_validate` | validation | Check for circular dependencies, orphan nodes, and layering violations |
 | `arch_metrics` | validation | Compute coupling, instability, and dependency depth scores |
-| `arch_recommend` | validation | Prioritized improvement recommendations from metrics + violations + patterns |
+| `arch_recommend` | validation | Prioritized improvement recommendations from metrics + violations + patterns, with per-rec evidence + confidence |
 | `arch_history` | history | Show how architecture evolved over git history |
 | `arch_snapshot` | export | Save current architecture as a baseline for drift detection |
 | `arch_registry_add` | registry | Register a repo by alias for reuse across tool calls |
