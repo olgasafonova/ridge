@@ -10,12 +10,56 @@ import (
 
 // Recommendation represents a single architecture improvement suggestion.
 type Recommendation struct {
-	Category  string   `json:"category"`  // e.g. "break_cycle", "reduce_coupling"
-	Priority  string   `json:"priority"`  // "high", "medium", "low"
-	Subject   []string `json:"subject"`   // affected node IDs
-	Title     string   `json:"title"`     // one-line summary
-	Rationale string   `json:"rationale"` // why this matters, with evidence
-	Action    string   `json:"action"`    // concrete step to take
+	Category   string     `json:"category"`   // e.g. "break_cycle", "reduce_coupling"
+	Priority   string     `json:"priority"`   // "high", "medium", "low"
+	Subject    []string   `json:"subject"`    // affected node IDs
+	Title      string     `json:"title"`      // one-line summary
+	Rationale  string     `json:"rationale"`  // why this matters, with evidence
+	Action     string     `json:"action"`     // concrete step to take
+	Evidence   []Evidence `json:"evidence"`   // the metric reading(s) that triggered this rec
+	Confidence string     `json:"confidence"` // detector certainty: "high", "medium", "low"
+}
+
+// Evidence is one falsifiable metric reading behind a recommendation: the value
+// observed, the threshold it crossed, and the node it belongs to (empty for
+// graph-level signals). Exposing this inline is what makes a recommendation
+// verifiable instead of a bare assertion — a consumer or eval can re-derive the
+// judgment from the numbers rather than parsing the prose rationale.
+type Evidence struct {
+	Metric    string  `json:"metric"`            // "instability", "fan_in", "fan_out", "cycle_size", ...
+	Value     float64 `json:"value"`             // observed value
+	Threshold float64 `json:"threshold"`         // the line it crossed
+	Subject   string  `json:"subject,omitempty"` // node ID the reading belongs to
+}
+
+// confidenceFromMargin grades detector certainty for threshold-crossing rules by
+// how far the observed value exceeds the threshold. Ratio >=1.5 is "high",
+// >=1.2 is "medium", otherwise "low" (it barely crossed the line).
+func confidenceFromMargin(value, threshold float64) string {
+	if threshold <= 0 {
+		return "medium"
+	}
+	switch r := value / threshold; {
+	case r >= 1.5:
+		return "high"
+	case r >= 1.2:
+		return "medium"
+	default:
+		return "low"
+	}
+}
+
+// weakestConfidence returns the lowest confidence among several signals. A rec
+// gated on multiple thresholds is only as certain as its weakest one.
+func weakestConfidence(levels ...string) string {
+	rank := map[string]int{"high": 0, "medium": 1, "low": 2}
+	worst := "high"
+	for _, l := range levels {
+		if rank[l] > rank[worst] {
+			worst = l
+		}
+	}
+	return worst
 }
 
 // RecommendArchitecture synthesizes findings from validation, metrics, and
@@ -83,6 +127,11 @@ func breakCycleRec(scc []string) (Recommendation, bool) {
 		Title:     fmt.Sprintf("Break circular dependency among %d components", len(scc)),
 		Rationale: fmt.Sprintf("Components %s form a cycle, preventing independent deployment and testing.", strings.Join(scc, ", ")),
 		Action:    "Introduce an interface or event-based decoupling to break the dependency loop.",
+		// Deterministic (Tarjan SCC): a cycle either exists or it doesn't.
+		Confidence: "high",
+		Evidence: []Evidence{
+			{Metric: "cycle_size", Value: float64(len(scc)), Threshold: 1},
+		},
 	}, true
 }
 
@@ -118,12 +167,16 @@ func reduceCouplingRec(n *model.Node, metrics *Metrics, threshold float64) (Reco
 		priority = "high"
 	}
 	return Recommendation{
-		Category:  "reduce_coupling",
-		Priority:  priority,
-		Subject:   []string{n.ID},
-		Title:     fmt.Sprintf("Reduce coupling of %s (fan-out %.0f, avg %.1f)", n.Name, coupling, metrics.AvgCoupling),
-		Rationale: fmt.Sprintf("Component %q has %.0f outgoing dependencies, more than 2× the project average of %.1f.", n.Name, coupling, metrics.AvgCoupling),
-		Action:    "Extract shared dependencies into a facade or split into smaller focused modules.",
+		Category:   "reduce_coupling",
+		Priority:   priority,
+		Subject:    []string{n.ID},
+		Title:      fmt.Sprintf("Reduce coupling of %s (fan-out %.0f, avg %.1f)", n.Name, coupling, metrics.AvgCoupling),
+		Rationale:  fmt.Sprintf("Component %q has %.0f outgoing dependencies, more than 2× the project average of %.1f.", n.Name, coupling, metrics.AvgCoupling),
+		Action:     "Extract shared dependencies into a facade or split into smaller focused modules.",
+		Confidence: confidenceFromMargin(coupling, threshold),
+		Evidence: []Evidence{
+			{Metric: "fan_out", Value: coupling, Threshold: threshold, Subject: n.ID},
+		},
 	}, true
 }
 
@@ -163,6 +216,15 @@ func stabilizeCoreRec(n *model.Node, metrics *Metrics, fanIn map[string]int) (Re
 		Title:     fmt.Sprintf("Stabilize %s (fan-in %d, instability %.2f)", n.Name, fi, inst),
 		Rationale: fmt.Sprintf("Component %q is depended on by %d others but has instability %.2f. Changes here ripple widely.", n.Name, fi, inst),
 		Action:    "Reduce outgoing dependencies or extract a stable interface that dependents can rely on.",
+		// Gated on two thresholds; only as certain as the weaker margin.
+		Confidence: weakestConfidence(
+			confidenceFromMargin(float64(fi), 3),
+			confidenceFromMargin(inst, 0.7),
+		),
+		Evidence: []Evidence{
+			{Metric: "fan_in", Value: float64(fi), Threshold: 3, Subject: n.ID},
+			{Metric: "instability", Value: inst, Threshold: 0.7, Subject: n.ID},
+		},
 	}, true
 }
 
@@ -180,6 +242,11 @@ func recommendAddServiceLayer(_ *model.ArchGraph, violations []Violation) []Reco
 			Title:     fmt.Sprintf("Add service layer between %s", v.Subject),
 			Rationale: fmt.Sprintf("Direct endpoint-to-database access detected: %s. This bypasses business logic and makes changes harder.", v.Detail),
 			Action:    "Introduce a service or repository layer to mediate between the endpoint and the database.",
+			// Deterministic: a direct endpoint→database edge was found in the graph.
+			Confidence: "high",
+			Evidence: []Evidence{
+				{Metric: "endpoint_to_database_edges", Value: 1, Threshold: 1, Subject: v.Subject},
+			},
 		})
 	}
 	return recs
@@ -207,6 +274,11 @@ func recommendSplitDatabase(graph *model.ArchGraph) []Recommendation {
 			Title:     fmt.Sprintf("Consider splitting shared database %s", databases[0].Name),
 			Rationale: fmt.Sprintf("Single database %q is shared by %d services. Schema changes affect all consumers and create deployment coupling.", databases[0].Name, serviceCount),
 			Action:    "Evaluate database-per-service or schema separation to reduce cross-service coupling.",
+			// Heuristic (a shared DB can be intentional): certainty scales with fan-out.
+			Confidence: confidenceFromMargin(float64(serviceCount), 2),
+			Evidence: []Evidence{
+				{Metric: "services_sharing_database", Value: float64(serviceCount), Threshold: 2, Subject: databases[0].ID},
+			},
 		},
 	}
 }
@@ -227,6 +299,12 @@ func recommendAddCaching(graph *model.ArchGraph) []Recommendation {
 			Title:     fmt.Sprintf("Add caching layer (%d endpoints, no cache detected)", len(endpoints)),
 			Rationale: fmt.Sprintf("Found %d HTTP endpoints but no caching infrastructure. Read-heavy endpoints may benefit from caching.", len(endpoints)),
 			Action:    "Identify read-heavy endpoints and add a cache (Redis, in-memory) to reduce database load.",
+			// Heuristic (not every endpoint set needs a cache): certainty scales with endpoint count.
+			Confidence: confidenceFromMargin(float64(len(endpoints)), 5),
+			Evidence: []Evidence{
+				{Metric: "endpoints", Value: float64(len(endpoints)), Threshold: 5},
+				{Metric: "caches", Value: float64(len(caches)), Threshold: 1},
+			},
 		},
 	}
 }
@@ -245,12 +323,16 @@ func recommendSplitModule(graph *model.ArchGraph, metrics *Metrics) []Recommenda
 		coupling := metrics.Coupling[n.ID]
 		if coupling > 8 {
 			recs = append(recs, Recommendation{
-				Category:  "split_module",
-				Priority:  "medium",
-				Subject:   []string{n.ID},
-				Title:     fmt.Sprintf("Split %s (fan-out %.0f)", n.Name, coupling),
-				Rationale: fmt.Sprintf("Component %q depends on %.0f other components, suggesting it handles too many responsibilities.", n.Name, coupling),
-				Action:    "Decompose into smaller modules, each with a focused responsibility and fewer dependencies.",
+				Category:   "split_module",
+				Priority:   "medium",
+				Subject:    []string{n.ID},
+				Title:      fmt.Sprintf("Split %s (fan-out %.0f)", n.Name, coupling),
+				Rationale:  fmt.Sprintf("Component %q depends on %.0f other components, suggesting it handles too many responsibilities.", n.Name, coupling),
+				Action:     "Decompose into smaller modules, each with a focused responsibility and fewer dependencies.",
+				Confidence: confidenceFromMargin(coupling, 8),
+				Evidence: []Evidence{
+					{Metric: "fan_out", Value: coupling, Threshold: 8, Subject: n.ID},
+				},
 			})
 		}
 	}
@@ -271,6 +353,11 @@ func recommendRemoveOrphans(_ *model.ArchGraph, violations []Violation) []Recomm
 			Title:     fmt.Sprintf("Remove or connect orphan %s", v.Subject),
 			Rationale: v.Detail,
 			Action:    "If this component is unused, remove it. If it should be connected, add the missing dependency.",
+			// Deterministic: an orphan has zero edges, below the 1 a connected node needs.
+			Confidence: "high",
+			Evidence: []Evidence{
+				{Metric: "connected_edges", Value: 0, Threshold: 1, Subject: v.Subject},
+			},
 		})
 	}
 	return recs

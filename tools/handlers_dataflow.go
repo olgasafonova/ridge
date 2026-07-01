@@ -91,9 +91,12 @@ type BoundaryInfo struct {
 }
 
 type ArchBoundariesResult struct {
-	Topology   string         `json:"topology"`
-	Boundaries []BoundaryInfo `json:"boundaries"`
-	Summary    string         `json:"summary"`
+	Topology   string                   `json:"topology"`
+	Boundaries []BoundaryInfo           `json:"boundaries"`
+	Signals    detector.TopologySignals `json:"signals"`   // evidence behind the verdict
+	Reason     string                   `json:"reason"`    // which rule produced the topology
+	Ambiguous  bool                     `json:"ambiguous"` // true when the verdict is borderline
+	Summary    string                   `json:"summary"`
 }
 
 func (h *HandlerRegistry) archBoundaries(_ context.Context, args ArchBoundariesArgs) (*ArchBoundariesResult, error) {
@@ -124,9 +127,18 @@ func (h *HandlerRegistry) archBoundaries(_ context.Context, args ArchBoundariesA
 		boundaries = []BoundaryInfo{}
 	}
 
+	summary := fmt.Sprintf("Detected %s topology with %d boundaries (%s)",
+		result.Topology, len(boundaries), result.Reason)
+	if result.Ambiguous {
+		summary += " — verdict is borderline; check signals"
+	}
+
 	return &ArchBoundariesResult{
 		Topology:   string(result.Topology),
 		Boundaries: boundaries,
-		Summary:    fmt.Sprintf("Detected %s topology with %d boundaries", result.Topology, len(boundaries)),
+		Signals:    result.Signals,
+		Reason:     result.Reason,
+		Ambiguous:  result.Ambiguous,
+		Summary:    summary,
 	}, nil
 }
