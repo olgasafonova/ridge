@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/olgasafonova/ridge/internal/detector"
 	"github.com/olgasafonova/ridge/internal/model"
@@ -81,6 +82,7 @@ func collectDataPaths(graph *model.ArchGraph) []string {
 type ArchBoundariesArgs struct {
 	Path string `json:"path"`
 	Repo string `json:"repo,omitempty"`
+	ScanControl
 }
 
 type BoundaryInfo struct {
@@ -91,16 +93,17 @@ type BoundaryInfo struct {
 }
 
 type ArchBoundariesResult struct {
-	Topology   string                   `json:"topology"`
-	Boundaries []BoundaryInfo           `json:"boundaries"`
-	Signals    detector.TopologySignals `json:"signals"`   // evidence behind the verdict
-	Reason     string                   `json:"reason"`    // which rule produced the topology
-	Ambiguous  bool                     `json:"ambiguous"` // true when the verdict is borderline
-	Summary    string                   `json:"summary"`
+	Topology     string                   `json:"topology"`
+	Boundaries   []BoundaryInfo           `json:"boundaries"`
+	Signals      detector.TopologySignals `json:"signals"`                 // filesystem-marker evidence behind the verdict
+	GraphSignals *detector.GraphSignals   `json:"graph_signals,omitempty"` // scan-derived evidence (cross-boundary edges, shared DB); nil when the scan fails
+	Reason       string                   `json:"reason"`                  // which rule produced the topology
+	Ambiguous    bool                     `json:"ambiguous"`               // true when the verdict is borderline
+	Summary      string                   `json:"summary"`
 }
 
-func (h *HandlerRegistry) archBoundaries(_ context.Context, args ArchBoundariesArgs) (*ArchBoundariesResult, error) {
-	path, _, err := h.resolveRepoPath(args.Path, args.Repo)
+func (h *HandlerRegistry) archBoundaries(ctx context.Context, args ArchBoundariesArgs) (*ArchBoundariesResult, error) {
+	path, alias, err := h.resolveRepoPath(args.Path, args.Repo)
 	if err != nil {
 		return nil, err
 	}
@@ -111,6 +114,18 @@ func (h *HandlerRegistry) archBoundaries(_ context.Context, args ArchBoundariesA
 	result, err := detector.DetectBoundaries(path)
 	if err != nil {
 		return nil, fmt.Errorf("detecting boundaries: %w", err)
+	}
+
+	// Best-effort scan for graph-derived evidence. Boundary detection itself
+	// is marker-based and must keep working when a scan cannot (unsupported
+	// language mix, scan limits), so a scan failure degrades to nil signals
+	// instead of failing the tool.
+	var graphSignals *detector.GraphSignals
+	if graph, _, scanErr := h.scanPath(ctx, path, alias, args.ScanControl); scanErr == nil {
+		graphSignals = detector.ComputeGraphSignals(result.Boundaries, graph)
+	} else {
+		h.logger.Warn("arch_boundaries: scan for graph signals failed; returning marker evidence only",
+			"path", path, "error", scanErr)
 	}
 
 	var boundaries []BoundaryInfo
@@ -129,16 +144,25 @@ func (h *HandlerRegistry) archBoundaries(_ context.Context, args ArchBoundariesA
 
 	summary := fmt.Sprintf("Detected %s topology with %d boundaries (%s)",
 		result.Topology, len(boundaries), result.Reason)
+	summary += fmt.Sprintf("; %d deployable units", result.Signals.DeployableUnits)
+	if graphSignals != nil {
+		shared := "no shared database"
+		if graphSignals.SharedDatabase {
+			shared = fmt.Sprintf("shared database (%s)", strings.Join(graphSignals.SharedDatabaseIDs, ", "))
+		}
+		summary += fmt.Sprintf(", %d cross-boundary edges, %s", graphSignals.CrossBoundaryEdges, shared)
+	}
 	if result.Ambiguous {
 		summary += " — verdict is borderline; check signals"
 	}
 
 	return &ArchBoundariesResult{
-		Topology:   string(result.Topology),
-		Boundaries: boundaries,
-		Signals:    result.Signals,
-		Reason:     result.Reason,
-		Ambiguous:  result.Ambiguous,
-		Summary:    summary,
+		Topology:     string(result.Topology),
+		Boundaries:   boundaries,
+		Signals:      result.Signals,
+		GraphSignals: graphSignals,
+		Reason:       result.Reason,
+		Ambiguous:    result.Ambiguous,
+		Summary:      summary,
 	}, nil
 }
