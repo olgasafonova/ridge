@@ -32,6 +32,11 @@ type TopologySignals struct {
 	HasWorkspaceConfig  bool `json:"has_workspace_config"`
 	HasDockerCompose    bool `json:"has_docker_compose"`
 	HasK8s              bool `json:"has_k8s"`
+	// DeployableUnits counts boundaries that ship independently: service-typed
+	// boundaries (cmd/ subdirectories, standalone Dockerfiles) plus any module
+	// boundary that also carries a Dockerfile. Derived from the detected
+	// boundaries as supplementary evidence; it does not drive inferTopology.
+	DeployableUnits int `json:"deployable_units"`
 }
 
 // Boundary represents a detected service or module boundary.
@@ -91,7 +96,31 @@ func DetectBoundaries(rootPath string) (*BoundaryResult, error) {
 	}
 
 	result.Boundaries = buildBoundaries(result.Boundaries, absRoot, markers)
+	result.Signals.DeployableUnits = countDeployableUnits(result.Boundaries)
 	return result, nil
+}
+
+// countDeployableUnits returns the number of boundaries that represent an
+// independently-deployable unit: every service-typed boundary plus any module
+// boundary augmented with a Dockerfile marker.
+func countDeployableUnits(boundaries []Boundary) int {
+	count := 0
+	for _, b := range boundaries {
+		if b.Type == "service" || hasMarker(b, "Dockerfile") {
+			count++
+		}
+	}
+	return count
+}
+
+// hasMarker reports whether the boundary carries the named marker file.
+func hasMarker(b Boundary, marker string) bool {
+	for _, m := range b.Markers {
+		if m == marker {
+			return true
+		}
+	}
+	return false
 }
 
 // collectBoundaryMarkers walks the tree once and returns every project-level
