@@ -120,9 +120,9 @@ FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first). Ret
 USE WHEN the user wants to understand how the codebase is divided,
 whether it's a monolith, monorepo, or microservices.
 Detects boundaries from go.mod/package.json, cmd/ directories, Dockerfiles, and k8s manifests.
-Returns "signals" (the marker counts and workspace/orchestration flags behind the verdict), "reason" (which rule fired), and "ambiguous" (true when the topology is a borderline/fallback call) so the classification can be verified, not just trusted.
-WHY: Infers boundaries from conventional markers. Projects without go.mod, package.json, Dockerfiles, or k8s manifests produce weaker boundary detection and may report "unknown" topology (flagged ambiguous).
-FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
+Returns "signals" (marker counts, workspace/orchestration flags, and deployable-unit count behind the verdict), "graph_signals" (scan-derived: cross-boundary edge count and shared-database node IDs), "reason" (which rule fired), and "ambiguous" (true when the topology is a borderline/fallback call) so the classification can be verified, not just trusted.
+WHY: Infers boundaries from conventional markers. Projects without go.mod, package.json, Dockerfiles, or k8s manifests produce weaker boundary detection and may report "unknown" topology (flagged ambiguous). "graph_signals" is omitted when the code scan fails; marker evidence still returns.
+FAILS WHEN: the path does not exist or is outside the allowed scan roots.`,
 		Category:   "analysis",
 		ReadOnly:   true,
 		Idempotent: true,
