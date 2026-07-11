@@ -18,7 +18,9 @@ func ptr[T any](v T) *T {
 	return &v
 }
 
-// AllTools defines the 17 MCP tools for code-to-arch analysis.
+// AllTools defines the MCP tools for code-to-arch analysis. The expected
+// count is asserted in definitions_test.go; keep that test in sync when
+// adding or removing tools.
 var AllTools = []ToolSpec{
 	{
 		Name:   "arch_scan",

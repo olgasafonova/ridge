@@ -23,7 +23,9 @@ const maxSampleFileBytes = 2 * 1024 * 1024 // 2 MiB
 // other file-backed nodes start at the first non-blank line. Directory-path
 // nodes (packages, modules) are skipped because they do not pin to a single
 // file. Read errors are silently skipped so a missing or unreadable file
-// degrades to "no sample" rather than failing the scan.
+// degrades to "no sample" rather than failing the scan. Every snippet passes
+// through maskSecrets before it lands in Node.Source, so hardcoded
+// credentials in scanned source never reach MCP callers.
 func PopulateSamples(graph *model.ArchGraph, lines int) {
 	if lines <= 0 {
 		lines = DefaultSampleLines
@@ -45,7 +47,7 @@ func PopulateSamples(graph *model.ArchGraph, lines int) {
 		if snippet == "" {
 			continue
 		}
-		n.Source = snippet
+		n.Source = maskSnippet(snippet)
 	}
 }
 
