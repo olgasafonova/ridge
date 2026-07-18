@@ -18,6 +18,14 @@ Most teams know they should review architecture regularly, check for circular de
 - `arch_drift` compares architecture between any two git refs. It catches structural changes that code review misses: a new database dependency, a service that quietly became a monolith, an endpoint that bypasses the API gateway.
 - `arch_drift_explain` wraps that diff in a 2-5 sentence narrative you can paste straight into a PR description, standup channel, or release note. No LLM call; pure templating from the structured diff.
 
+### The killer use case: onboarding onto code you don't own
+
+The single highest-value moment for Ridge is the one every engineer hits weekly: **you have to change a codebase your team didn't build.** The old kickoff for that work was reading the source, tracing dependencies, and building a mental model in your head. When an agent writes the code, that step disappears, and with it the understanding. So agents change systems nobody on the calling team actually comprehends, and architecture decisions get made by whoever (or whatever) writes the first line.
+
+Ridge replaces the missing step. Point it at the unfamiliar tree and `arch_scan` + `arch_generate` produce a current architecture model — services, packages, infra, endpoints, and their edges — that an engineer can read in minutes instead of reverse-engineering by hand. The owning team can react to *that*, rather than to a Slack thread or a finished PR, so alignment happens before code exists instead of after.
+
+This isn't hypothetical. Miro demoed the identical pattern at Canvas 26 ("Give Your Agentic Coding Tools the Full Picture," June 2026): a feature team needed to add tools to an MCP server another team owned, used an agent to read that codebase and generate an architecture board, and used it to onboard themselves and align with the owning team — without waiting on a backlog. Same problem, same shape, independently arrived at. Ridge makes that the default workflow rather than a one-off prompt.
+
 <!-- TODO: Add demo GIF showing arch_scan + arch_generate on a real project -->
 
 ## What it does
@@ -78,6 +86,8 @@ Once configured, ask your LLM:
 - "Scan the architecture of ~/Projects/my-app"
 - "Generate a C4 diagram of this project"
 - "Are there any circular dependencies or layering violations?"
+- "Grandfather our existing violations, then fail only on new ones" (uses arch_validate baseline mode)
+- "Do our tsconfig path aliases and go.mod replace targets actually exist?"
 - "Compare architecture between the v1.0 tag and main branch"
 - "How has the architecture changed since last month?"
 - "What databases does this service connect to?"
@@ -104,7 +114,7 @@ Once configured, ask your LLM:
 | `arch_drift` | Compare architecture between two branches, tags, or commits |
 | `arch_drift_explain` | Compare two refs and return a 2-5 sentence narrative summary plus the structured diff — paste-ready for PR descriptions |
 | `arch_dataflow` | Trace data flow from endpoints to data stores with structured process traces |
-| `arch_validate` | Check for circular dependencies, orphan nodes, and layering violations |
+| `arch_validate` | Check for circular dependencies, orphan nodes, layering violations, and environment inconsistencies — with a baseline mode that grandfathers existing violations and fails only on new ones |
 | `arch_recommend` | Produce prioritized architecture improvement recommendations, each carrying the triggering metric evidence (value + threshold + node) and a confidence grade |
 
 ### All 19 tools
@@ -122,7 +132,7 @@ Once configured, ask your LLM:
 | `arch_diff` | drift | Compare current architecture against a saved baseline |
 | `arch_drift` | drift | Compare architecture between two git refs |
 | `arch_drift_explain` | drift | Narrative summary of drift between two git refs (paste-ready prose) |
-| `arch_validate` | validation | Check for circular dependencies, orphan nodes, and layering violations |
+| `arch_validate` | validation | Check circular dependencies, orphans, layering, and environment inconsistencies; baseline mode ratchets legacy codebases |
 | `arch_metrics` | validation | Compute coupling, instability, and dependency depth scores |
 | `arch_recommend` | validation | Prioritized improvement recommendations from metrics + violations + patterns, with per-rec evidence + confidence |
 | `arch_history` | history | Show how architecture evolved over git history |
@@ -130,6 +140,27 @@ Once configured, ask your LLM:
 | `arch_registry_add` | registry | Register a repo by alias for reuse across tool calls |
 | `arch_registry_list` | registry | List all registered repos |
 | `arch_registry_remove` | registry | Remove a registered repo alias |
+
+### Known-violations baseline (ratchet)
+
+Adopting `arch_validate` on a legacy codebase usually means a wall of pre-existing violations and a permanently red check. The baseline mode fixes the incentive: grandfather what exists, fail only on what's new.
+
+- `baseline="write"` saves the current violations to `.arch-known-violations.json` at the repo root. Commit the file so the whole team shares the ratchet.
+- `baseline="check"` validates as usual, but `valid` reflects only violations absent from the baseline. New ones land in `new_violations`; the grandfathered count is reported alongside.
+
+The full violation list stays in `violations` either way — a baseline changes the verdict, never hides findings. Matching keys on rule + subject, so a ridge upgrade that rewords violation details won't invalidate a committed baseline. Override the file location with `baseline_file` (contained to the scanned repo).
+
+### Environment inconsistency checks
+
+`arch_validate` also cross-checks declared module resolution against the filesystem, catching config drift that breaks builds without ever showing up in the import graph:
+
+| Rule | Severity | What it catches |
+|------|----------|----------------|
+| `go_mod_replace_target_missing` | high | go.mod `replace` directive pointing at a local path that doesn't exist |
+| `tsconfig_baseurl_missing` | high | tsconfig `baseUrl` directory missing — every path alias resolves against it |
+| `tsconfig_path_target_missing` | medium | tsconfig `paths` alias mapping to a location that doesn't exist |
+
+tsconfig parsing tolerates JSONC (comments and trailing commas), and the walk honors the scanner's skip list (`node_modules`, `vendor`, ...).
 
 ## Supported languages
 
