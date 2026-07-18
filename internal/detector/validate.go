@@ -2,6 +2,8 @@ package detector
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/olgasafonova/ridge/internal/model"
 )
@@ -20,6 +22,7 @@ func ValidateGraph(graph *model.ArchGraph, customRules *RulesConfig) []Violation
 	violations = append(violations, checkCycles(graph)...)
 	violations = append(violations, checkOrphans(graph)...)
 	violations = append(violations, checkLayeringViolations(graph)...)
+	violations = append(violations, CheckEnvironment(graph.RootPath)...)
 	if customRules != nil {
 		violations = append(violations, CheckCustomRules(graph, customRules, graph.RootPath)...)
 	}
@@ -28,24 +31,33 @@ func ValidateGraph(graph *model.ArchGraph, customRules *RulesConfig) []Violation
 
 // checkCycles detects circular dependencies.
 func checkCycles(graph *model.ArchGraph) []Violation {
-	if !graph.HasCycle() {
-		return nil
-	}
-
-	// Find nodes participating in cycles using Tarjan's SCC
+	// Find nodes participating in cycles using Tarjan's SCC over RESOLVED
+	// edges: raw Go/TS import edges target unresolved "import:<path>" strings,
+	// so a cycle mediated by imports (the common case) never closes in the
+	// raw edge set. blast_radius and the renderers already resolve; validate
+	// must too, or import cycles are structurally undetectable.
 	sccs := tarjanSCC(graph)
 	var violations []Violation
 	for _, scc := range sccs {
 		if len(scc) > 1 {
+			// Sort membership so the Subject is deterministic across runs
+			// and structurally identifies THIS cycle: baseline matching
+			// (see baseline.go) keys on Rule+Subject, so two different
+			// cycles of the same size must not collide.
+			sorted := append([]string(nil), scc...)
+			sort.Strings(sorted)
 			violations = append(violations, Violation{
 				Rule:     "no_circular_dependencies",
 				Severity: model.SeverityCritical,
-				Subject:  fmt.Sprintf("cycle(%d nodes)", len(scc)),
-				Detail:   fmt.Sprintf("Circular dependency among: %v", scc),
+				Subject:  fmt.Sprintf("cycle(%d nodes): %s", len(sorted), strings.Join(sorted, ", ")),
+				Detail:   fmt.Sprintf("Circular dependency among: %v", sorted),
 			})
 		}
 	}
 
+	// Fallback for cycles Tarjan-over-resolved can't see: ResolvedEdges
+	// drops self-loops, so a raw-edge self-cycle still needs the generic
+	// raw-edge check.
 	if len(violations) == 0 && graph.HasCycle() {
 		violations = append(violations, Violation{
 			Rule:     "no_circular_dependencies",
@@ -84,7 +96,9 @@ func tarjanSCC(graph *model.ArchGraph) [][]string {
 
 func newTarjanState(graph *model.ArchGraph) *tarjanState {
 	adj := make(map[string][]string)
-	for _, e := range graph.Edges() {
+	// ResolvedEdges rewrites import:/wikilink: targets to concrete node IDs
+	// and drops unresolvable ones, so SCCs form across real dependencies.
+	for _, e := range graph.ResolvedEdges() {
 		if e.Type == model.EdgeDependency {
 			adj[e.Source] = append(adj[e.Source], e.Target)
 		}
