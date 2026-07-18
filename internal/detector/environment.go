@@ -23,6 +23,31 @@ import (
 //   - tsconfig.json baseUrl pointing at a missing directory
 //   - tsconfig.json compilerOptions.paths targets pointing at missing locations
 
+// Domain types, following the relPath/rootPrefix precedent in
+// model/graph_resolver.go: distinct from generic strings so signatures carry
+// the domain language and the compiler catches role mix-ups (for example,
+// passing the scan root where a config file path is expected).
+
+// configFile is the absolute path of a build-configuration file
+// (go.mod, tsconfig.json) found during the walk.
+type configFile string
+
+// goModSource is the raw contents of a go.mod file.
+type goModSource string
+
+// localTarget is a replace directive's filesystem target (./ or ../ prefix).
+type localTarget string
+
+// pathAlias is a tsconfig paths alias key (for example "@lib/*").
+type pathAlias string
+
+// aliasPattern is one tsconfig paths target pattern (may contain '*').
+type aliasPattern string
+
+// jsonc is raw JSON-with-commentary bytes as tsconfig allows them:
+// // and /* */ comments plus trailing commas.
+type jsonc []byte
+
 // envSkipDirs mirrors the scanner's default skip set (scanner.go) so
 // environment checks never wander into dirs the scan itself ignores.
 var envSkipDirs = map[string]bool{
@@ -76,9 +101,9 @@ func (c *envChecker) visit(path string, d fs.DirEntry, err error) error {
 	}
 	switch d.Name() {
 	case "go.mod":
-		c.violations = append(c.violations, c.checkGoModReplacements(path)...)
+		c.violations = append(c.violations, c.checkGoModReplacements(configFile(path))...)
 	case "tsconfig.json":
-		c.violations = append(c.violations, c.checkTSConfig(path)...)
+		c.violations = append(c.violations, c.checkTSConfig(configFile(path))...)
 	}
 	return nil
 }
@@ -86,18 +111,18 @@ func (c *envChecker) visit(path string, d fs.DirEntry, err error) error {
 // checkGoModReplacements flags replace directives whose filesystem path
 // target (starting with ./ or ../, per the go.mod spec) doesn't exist.
 // A missing replace target breaks every build of that module.
-func (c *envChecker) checkGoModReplacements(goModPath string) []Violation {
-	data, err := os.ReadFile(goModPath)
+func (c *envChecker) checkGoModReplacements(file configFile) []Violation {
+	data, err := os.ReadFile(string(file))
 	if err != nil {
 		return nil
 	}
 
-	modDir := filepath.Dir(goModPath)
-	relMod := relativizePath(goModPath, c.root)
+	modDir := filepath.Dir(string(file))
+	relMod := relativizePath(string(file), c.root)
 
 	var violations []Violation
-	for _, target := range parseGoModLocalReplacements(string(data)) {
-		resolved := filepath.Join(modDir, target)
+	for _, target := range parseGoModLocalReplacements(goModSource(data)) {
+		resolved := filepath.Join(modDir, string(target))
 		if _, err := os.Stat(resolved); err == nil {
 			continue
 		}
@@ -105,7 +130,7 @@ func (c *envChecker) checkGoModReplacements(goModPath string) []Violation {
 			Rule:     "go_mod_replace_target_missing",
 			Severity: model.SeverityHigh,
 			Subject:  fmt.Sprintf("%s: %s", relMod, target),
-			Detail:   fmt.Sprintf("go.mod replace directive targets %q which does not exist (resolved: %s); builds of this module will fail", target, resolved),
+			Detail:   fmt.Sprintf("go.mod replace directive targets %q which does not exist (resolved: %s); builds of this module will fail", string(target), resolved),
 		})
 	}
 	return violations
@@ -115,10 +140,10 @@ func (c *envChecker) checkGoModReplacements(goModPath string) []Violation {
 // directives, handling both single-line and block form. Only targets starting
 // with ./ or ../ are returned — module-path replacements resolve through the
 // module proxy and are not filesystem claims.
-func parseGoModLocalReplacements(content string) []string {
-	var targets []string
+func parseGoModLocalReplacements(src goModSource) []localTarget {
+	var targets []localTarget
 	inBlock := false
-	for line := range strings.Lines(content) {
+	for line := range strings.Lines(string(src)) {
 		line = strings.TrimSpace(line)
 		if i := strings.Index(line, "//"); i >= 0 {
 			line = strings.TrimSpace(line[:i])
@@ -141,7 +166,7 @@ func parseGoModLocalReplacements(content string) []string {
 
 // appendLocalTarget parses one "old [version] => new [version]" directive and
 // appends the RHS when it is a filesystem path (./ or ../ prefix).
-func appendLocalTarget(targets []string, directive string) []string {
+func appendLocalTarget(targets []localTarget, directive string) []localTarget {
 	_, rhs, found := strings.Cut(directive, "=>")
 	if !found {
 		return targets
@@ -152,30 +177,34 @@ func appendLocalTarget(targets []string, directive string) []string {
 	}
 	target := strings.Trim(fields[0], `"`)
 	if strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../") {
-		return append(targets, target)
+		return append(targets, localTarget(target))
 	}
 	return targets
 }
 
+// compilerOptions is the subset of tsconfig compilerOptions relevant to
+// module resolution.
+type compilerOptions struct {
+	BaseURL string              `json:"baseUrl"`
+	Paths   map[string][]string `json:"paths"`
+}
+
 // tsConfig is the subset of tsconfig.json relevant to module resolution.
 type tsConfig struct {
-	CompilerOptions struct {
-		BaseURL string              `json:"baseUrl"`
-		Paths   map[string][]string `json:"paths"`
-	} `json:"compilerOptions"`
+	CompilerOptions compilerOptions `json:"compilerOptions"`
 }
 
 // checkTSConfig flags baseUrl and paths targets that don't exist on disk.
-func (c *envChecker) checkTSConfig(tsconfigPath string) []Violation {
-	cfg, ok := loadTSConfig(tsconfigPath)
+func (c *envChecker) checkTSConfig(file configFile) []Violation {
+	cfg, ok := loadTSConfig(file)
 	if !ok {
 		return nil
 	}
 	ctx := &tsContext{
-		relConf: relativizePath(tsconfigPath, c.root),
-		baseDir: filepath.Dir(tsconfigPath),
+		relConf: relativizePath(string(file), c.root),
+		baseDir: filepath.Dir(string(file)),
 	}
-	if violations, fatal := ctx.applyBaseURL(cfg.CompilerOptions.BaseURL); fatal {
+	if violations, fatal := ctx.applyBaseURL(cfg.CompilerOptions); fatal {
 		return violations
 	}
 	return ctx.checkPaths(cfg.CompilerOptions.Paths)
@@ -185,9 +214,9 @@ func (c *envChecker) checkTSConfig(tsconfigPath string) []Violation {
 // and trailing commas (JSONC), so the bytes are stripped before parsing;
 // files that still fail to parse are skipped rather than reported — parse
 // validity is the compiler's job, not ridge's.
-func loadTSConfig(path string) (tsConfig, bool) {
+func loadTSConfig(file configFile) (tsConfig, bool) {
 	var cfg tsConfig
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(string(file))
 	if err != nil {
 		return cfg, false
 	}
@@ -206,11 +235,11 @@ type tsContext struct {
 // applyBaseURL resolves baseUrl into the context. A missing baseUrl dir is
 // fatal for the whole config: every path alias resolves against it, so
 // reporting each alias would be N duplicates of one root cause.
-func (c *tsContext) applyBaseURL(baseURL string) ([]Violation, bool) {
-	if baseURL == "" {
+func (c *tsContext) applyBaseURL(opts compilerOptions) ([]Violation, bool) {
+	if opts.BaseURL == "" {
 		return nil, false
 	}
-	resolved := filepath.Join(c.baseDir, baseURL)
+	resolved := filepath.Join(c.baseDir, opts.BaseURL)
 	if _, err := os.Stat(resolved); err == nil {
 		c.baseDir = resolved
 		return nil, false
@@ -218,8 +247,8 @@ func (c *tsContext) applyBaseURL(baseURL string) ([]Violation, bool) {
 	return []Violation{{
 		Rule:     "tsconfig_baseurl_missing",
 		Severity: model.SeverityHigh,
-		Subject:  fmt.Sprintf("%s: baseUrl %s", c.relConf, baseURL),
-		Detail:   fmt.Sprintf("tsconfig baseUrl %q does not exist (resolved: %s); all path aliases resolve against it", baseURL, resolved),
+		Subject:  fmt.Sprintf("%s: baseUrl %s", c.relConf, opts.BaseURL),
+		Detail:   fmt.Sprintf("tsconfig baseUrl %q does not exist (resolved: %s); all path aliases resolve against it", opts.BaseURL, resolved),
 	}}, true
 }
 
@@ -228,7 +257,7 @@ func (c *tsContext) checkPaths(paths map[string][]string) []Violation {
 	var violations []Violation
 	for alias, patterns := range paths {
 		for _, pattern := range patterns {
-			if v, missing := c.pathViolation(alias, pattern); missing {
+			if v, missing := c.pathViolation(pathAlias(alias), aliasPattern(pattern)); missing {
 				violations = append(violations, v)
 			}
 		}
@@ -239,9 +268,9 @@ func (c *tsContext) checkPaths(paths map[string][]string) []Violation {
 // pathViolation checks one alias pattern. For wildcard patterns like
 // "src/lib/*" the directory prefix before the wildcard is checked; for
 // exact patterns the full path.
-func (c *tsContext) pathViolation(alias, pattern string) (Violation, bool) {
-	check := pattern
-	if prefix, _, found := strings.Cut(pattern, "*"); found {
+func (c *tsContext) pathViolation(alias pathAlias, pattern aliasPattern) (Violation, bool) {
+	check := string(pattern)
+	if prefix, _, found := strings.Cut(check, "*"); found {
 		check = strings.TrimSuffix(prefix, "/")
 		if check == "" {
 			return Violation{}, false // pattern like "*" matches baseUrl itself
@@ -255,7 +284,7 @@ func (c *tsContext) pathViolation(alias, pattern string) (Violation, bool) {
 		Rule:     "tsconfig_path_target_missing",
 		Severity: model.SeverityMedium,
 		Subject:  fmt.Sprintf("%s: %s -> %s", c.relConf, alias, pattern),
-		Detail:   fmt.Sprintf("tsconfig path alias %q maps to %q which does not exist (resolved: %s); imports through this alias will not resolve", alias, pattern, resolved),
+		Detail:   fmt.Sprintf("tsconfig path alias %q maps to %q which does not exist (resolved: %s); imports through this alias will not resolve", string(alias), string(pattern), resolved),
 	}, true
 }
 
@@ -264,12 +293,12 @@ func (c *tsContext) pathViolation(alias, pattern string) (Violation, bool) {
 // Two passes: comments first, then trailing commas — a single pass would
 // miss a trailing comma separated from its closing brace by a comment
 // (`"x", /* note */ }`), because the comma lookahead would see the comment.
-func stripJSONC(data []byte) []byte {
+func stripJSONC(data jsonc) jsonc {
 	return stripTrailingCommas(stripComments(data))
 }
 
 // stripComments removes // and /* */ comments outside string literals.
-func stripComments(data []byte) []byte {
+func stripComments(data jsonc) jsonc {
 	s := newJSONCScanner(data)
 	for !s.done() {
 		switch {
@@ -288,7 +317,7 @@ func stripComments(data []byte) []byte {
 
 // stripTrailingCommas removes commas whose next non-whitespace byte closes
 // a container, outside string literals.
-func stripTrailingCommas(data []byte) []byte {
+func stripTrailingCommas(data jsonc) jsonc {
 	s := newJSONCScanner(data)
 	for !s.done() {
 		switch {
@@ -311,7 +340,7 @@ type jsoncScanner struct {
 	out  []byte
 }
 
-func newJSONCScanner(data []byte) *jsoncScanner {
+func newJSONCScanner(data jsonc) *jsoncScanner {
 	return &jsoncScanner{data: data, out: make([]byte, 0, len(data))}
 }
 
