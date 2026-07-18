@@ -177,13 +177,14 @@ FAILS WHEN: directory is not a git repository, specified git ref doesn't exist.`
 		Name:   "arch_validate",
 		Method: "ArchValidate",
 		Title:  "Validate Architecture Rules",
-		Description: `Check architecture against rules: circular dependencies, layering violations, boundary crossings.
+		Description: `Check architecture against rules: circular dependencies, layering violations, boundary crossings, environment inconsistencies (go.mod replace targets and tsconfig baseUrl/paths that don't exist on disk).
 USE WHEN the user asks "are there any architecture problems?" or wants to enforce constraints.
 Returns a list of violations with severity and suggested fixes.
+Ratchet mode for legacy codebases: baseline="write" grandfathers current violations into .arch-known-violations.json (commit it); baseline="check" then fails only on NEW violations — valid reflects new_violations only, while violations always lists everything including grandfathered ones. Override the file location with baseline_file (must stay inside the scanned repo).
 For numeric health scores (coupling, instability), use arch_metrics instead.
-FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first). Returns empty violations list if no problems found (that's a good result, not an error).`,
+FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), baseline="check" without a baseline file (run baseline="write" first). Returns empty violations list if no problems found (that's a good result, not an error).`,
 		Category:   "validation",
-		ReadOnly:   true,
+		ReadOnly:   false, // baseline="write" saves a known-violations file
 		Idempotent: true,
 	},
 	{

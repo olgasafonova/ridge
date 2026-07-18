@@ -2,7 +2,10 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"golang.org/x/sync/errgroup"
 
@@ -19,13 +22,21 @@ import (
 type ArchValidateArgs struct {
 	Path string `json:"path"`
 	Repo string `json:"repo,omitempty"`
+	// Baseline selects the known-violations ratchet mode: "" (off),
+	// "write" (save current violations as the accepted baseline), or
+	// "check" (fail only on violations not in the baseline).
+	Baseline     string `json:"baseline,omitempty"`
+	BaselineFile string `json:"baseline_file,omitempty"`
 	ScanControl
 }
 
 type ArchValidateResult struct {
-	Valid      bool     `json:"valid"`
-	Violations []string `json:"violations"`
-	Summary    string   `json:"summary"`
+	Valid         bool     `json:"valid"`
+	Violations    []string `json:"violations"`
+	NewViolations []string `json:"new_violations,omitempty"`
+	Grandfathered int      `json:"grandfathered,omitempty"`
+	BaselineFile  string   `json:"baseline_file,omitempty"`
+	Summary       string   `json:"summary"`
 }
 
 func (h *HandlerRegistry) archValidate(ctx context.Context, args ArchValidateArgs) (*ArchValidateResult, error) {
@@ -44,15 +55,93 @@ func (h *HandlerRegistry) archValidate(ctx context.Context, args ArchValidateArg
 
 	customRules := h.loadCustomRules(path)
 	detectedViolations := detector.ValidateGraph(graph, customRules)
-	violations := make([]string, 0, len(detectedViolations))
-	for _, v := range detectedViolations {
-		violations = append(violations, fmt.Sprintf("[%s] %s: %s", v.Severity, v.Rule, v.Detail))
-	}
+	violations := formatViolations(detectedViolations)
 
+	switch args.Baseline {
+	case "":
+		return &ArchValidateResult{
+			Valid:      len(violations) == 0,
+			Violations: violations,
+			Summary:    fmt.Sprintf("Validation complete: %d violations found", len(violations)),
+		}, nil
+	case "write":
+		return h.writeValidateBaseline(path, args.BaselineFile, detectedViolations, violations)
+	case "check":
+		return h.checkValidateBaseline(path, args.BaselineFile, detectedViolations, violations)
+	default:
+		return nil, fmt.Errorf("invalid baseline mode %q: must be \"write\" or \"check\" (or omit for plain validation)", args.Baseline)
+	}
+}
+
+// formatViolations renders violations in the [severity] rule: detail shape
+// used across validation results.
+func formatViolations(violations []detector.Violation) []string {
+	out := make([]string, 0, len(violations))
+	for _, v := range violations {
+		out = append(out, fmt.Sprintf("[%s] %s: %s", v.Severity, v.Rule, v.Detail))
+	}
+	return out
+}
+
+// baselineFilePath resolves the baseline location: explicit override or the
+// default .arch-known-violations.json at the repo root. The path is contained
+// to the scanned repo in both modes — write for obvious reasons, check so a
+// crafted baseline_file can't read files outside the repo.
+func baselineFilePath(override, repoPath string) (string, error) {
+	file := override
+	if file == "" {
+		file = filepath.Join(repoPath, detector.BaselineFileName)
+	}
+	if err := safepath.ValidateOutputPath(file, repoPath); err != nil {
+		return "", fmt.Errorf("invalid baseline file path: %w", err)
+	}
+	return file, nil
+}
+
+// writeValidateBaseline grandfathers the current violation set: subsequent
+// baseline="check" runs fail only on violations that aren't in this file.
+// This is the adoption ratchet — strict rules on a legacy codebase without a
+// red build on day one. Commit the file so the whole team shares the ratchet.
+func (h *HandlerRegistry) writeValidateBaseline(repoPath, override string, detected []detector.Violation, formatted []string) (*ArchValidateResult, error) {
+	file, err := baselineFilePath(override, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	baseline := detector.NewBaseline(detected)
+	if err := detector.SaveBaseline(file, baseline); err != nil {
+		return nil, err
+	}
 	return &ArchValidateResult{
-		Valid:      len(violations) == 0,
-		Violations: violations,
-		Summary:    fmt.Sprintf("Validation complete: %d violations found", len(violations)),
+		Valid:        len(formatted) == 0,
+		Violations:   formatted,
+		BaselineFile: file,
+		Summary:      fmt.Sprintf("Baseline written: %d known violations grandfathered to %s; future baseline=\"check\" runs fail only on new violations", len(baseline.Violations), file),
+	}, nil
+}
+
+// checkValidateBaseline validates against the saved baseline. Valid reflects
+// only NEW violations; the full list stays in Violations so a baseline can
+// change the verdict but never hide findings.
+func (h *HandlerRegistry) checkValidateBaseline(repoPath, override string, detected []detector.Violation, formatted []string) (*ArchValidateResult, error) {
+	file, err := baselineFilePath(override, repoPath)
+	if err != nil {
+		return nil, err
+	}
+	baseline, err := detector.LoadBaseline(file)
+	if err != nil {
+		if os.IsNotExist(errors.Unwrap(err)) {
+			return nil, fmt.Errorf("no baseline found at %s: run arch_validate with baseline=\"write\" first to grandfather current violations", file)
+		}
+		return nil, err
+	}
+	fresh, grandfathered := detector.SplitKnown(detected, baseline)
+	return &ArchValidateResult{
+		Valid:         len(fresh) == 0,
+		Violations:    formatted,
+		NewViolations: formatViolations(fresh),
+		Grandfathered: grandfathered,
+		BaselineFile:  file,
+		Summary:       fmt.Sprintf("Validation complete: %d violations found (%d new, %d grandfathered by baseline)", len(formatted), len(fresh), grandfathered),
 	}, nil
 }
 
