@@ -45,61 +45,73 @@ var _ = alpha.A
 	return repo
 }
 
+// mustValidate runs archValidate and fails the test on transport error.
+func mustValidate(t *testing.T, h *HandlerRegistry, args ArchValidateArgs) *ArchValidateResult {
+	t.Helper()
+	res, err := h.archValidate(context.Background(), args)
+	if err != nil {
+		t.Fatalf("archValidate (baseline=%q): %v", args.Baseline, err)
+	}
+	return res
+}
+
+// assertBaselineWritten verifies the write mode reported and produced the
+// baseline file at the repo root.
+func assertBaselineWritten(t *testing.T, res *ArchValidateResult, repo string) {
+	t.Helper()
+	wantFile := filepath.Join(repo, detector.BaselineFileName)
+	if res.BaselineFile != wantFile {
+		t.Fatalf("expected baseline at %s, got %s", wantFile, res.BaselineFile)
+	}
+	if _, err := os.Stat(wantFile); err != nil {
+		t.Fatalf("baseline file not written: %v", err)
+	}
+}
+
+// assertAllGrandfathered verifies the ratchet outcome when nothing changed
+// since the baseline: valid verdict, everything grandfathered, and the full
+// violation list still visible.
+func assertAllGrandfathered(t *testing.T, res *ArchValidateResult) {
+	t.Helper()
+	if !res.Valid {
+		t.Fatalf("expected valid=true when all violations are grandfathered, got %+v", res)
+	}
+	if res.Grandfathered == 0 {
+		t.Fatalf("expected grandfathered > 0, got %+v", res)
+	}
+	if len(res.NewViolations) != 0 {
+		t.Fatalf("expected no new violations, got %v", res.NewViolations)
+	}
+	// Visibility invariant: the full list stays reported even when valid.
+	if len(res.Violations) == 0 {
+		t.Fatal("grandfathered violations must remain visible in violations")
+	}
+}
+
 func TestArchValidate_BaselineWriteThenCheck(t *testing.T) {
 	repo := cycleRepo(t)
 	h := NewHandlerRegistry(testLogger())
-	ctx := context.Background()
 
 	// Plain validation sees the cycle.
-	plain, err := h.archValidate(ctx, ArchValidateArgs{Path: repo})
-	if err != nil {
-		t.Fatalf("plain validate: %v", err)
-	}
+	plain := mustValidate(t, h, ArchValidateArgs{Path: repo})
 	if plain.Valid || len(plain.Violations) == 0 {
 		t.Fatalf("expected cycle violations in fixture repo, got valid=%v violations=%v", plain.Valid, plain.Violations)
 	}
 
 	// Write the baseline: current violations are grandfathered.
-	written, err := h.archValidate(ctx, ArchValidateArgs{Path: repo, Baseline: "write"})
-	if err != nil {
-		t.Fatalf("baseline write: %v", err)
-	}
-	wantFile := filepath.Join(repo, detector.BaselineFileName)
-	if written.BaselineFile != wantFile {
-		t.Fatalf("expected baseline at %s, got %s", wantFile, written.BaselineFile)
-	}
-	if _, err := os.Stat(wantFile); err != nil {
-		t.Fatalf("baseline file not written: %v", err)
-	}
+	written := mustValidate(t, h, ArchValidateArgs{Path: repo, Baseline: "write"})
+	assertBaselineWritten(t, written, repo)
 
 	// Check mode: same violations, but the ratchet grandfathers them.
-	checked, err := h.archValidate(ctx, ArchValidateArgs{Path: repo, Baseline: "check"})
-	if err != nil {
-		t.Fatalf("baseline check: %v", err)
-	}
-	if !checked.Valid {
-		t.Fatalf("expected valid=true when all violations are grandfathered, got %+v", checked)
-	}
-	if checked.Grandfathered == 0 {
-		t.Fatalf("expected grandfathered > 0, got %+v", checked)
-	}
-	if len(checked.NewViolations) != 0 {
-		t.Fatalf("expected no new violations, got %v", checked.NewViolations)
-	}
-	// Visibility invariant: the full list stays reported even when valid.
-	if len(checked.Violations) == 0 {
-		t.Fatal("grandfathered violations must remain visible in violations")
-	}
+	checked := mustValidate(t, h, ArchValidateArgs{Path: repo, Baseline: "check"})
+	assertAllGrandfathered(t, checked)
 }
 
 func TestArchValidate_BaselineCheckCatchesNewViolation(t *testing.T) {
 	repo := cycleRepo(t)
 	h := NewHandlerRegistry(testLogger())
-	ctx := context.Background()
 
-	if _, err := h.archValidate(ctx, ArchValidateArgs{Path: repo, Baseline: "write"}); err != nil {
-		t.Fatalf("baseline write: %v", err)
-	}
+	mustValidate(t, h, ArchValidateArgs{Path: repo, Baseline: "write"})
 
 	// Introduce a NEW violation after the baseline: a second, distinct cycle.
 	writeFixture(t, repo, "gamma/gamma.go", `package gamma
@@ -118,10 +130,7 @@ var D = 1
 	// Fresh registry: the scan cache (5-min TTL) would otherwise serve the
 	// pre-change graph. Equivalent to a new MCP session after the change.
 	h = NewHandlerRegistry(testLogger())
-	checked, err := h.archValidate(ctx, ArchValidateArgs{Path: repo, Baseline: "check"})
-	if err != nil {
-		t.Fatalf("baseline check: %v", err)
-	}
+	checked := mustValidate(t, h, ArchValidateArgs{Path: repo, Baseline: "check"})
 	if checked.Valid {
 		t.Fatalf("expected valid=false with a new cycle, got %+v", checked)
 	}

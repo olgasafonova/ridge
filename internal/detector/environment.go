@@ -270,98 +270,119 @@ func stripJSONC(data []byte) []byte {
 
 // stripComments removes // and /* */ comments outside string literals.
 func stripComments(data []byte) []byte {
-	out := make([]byte, 0, len(data))
-	for i := 0; i < len(data); {
+	s := newJSONCScanner(data)
+	for !s.done() {
 		switch {
-		case data[i] == '"':
-			out, i = copyJSONString(data, i, out)
-		case lookingAt(data, i, '/', '/'):
-			i = skipLineComment(data, i)
-		case lookingAt(data, i, '/', '*'):
-			i = skipBlockComment(data, i)
+		case s.peek() == '"':
+			s.copyString()
+		case s.atComment('/'):
+			s.skipLineComment()
+		case s.atComment('*'):
+			s.skipBlockComment()
 		default:
-			out = append(out, data[i])
-			i++
+			s.copyByte()
 		}
 	}
-	return out
+	return s.out
 }
 
 // stripTrailingCommas removes commas whose next non-whitespace byte closes
 // a container, outside string literals.
 func stripTrailingCommas(data []byte) []byte {
-	out := make([]byte, 0, len(data))
-	for i := 0; i < len(data); {
+	s := newJSONCScanner(data)
+	for !s.done() {
 		switch {
-		case data[i] == '"':
-			out, i = copyJSONString(data, i, out)
-		case data[i] == ',' && nextClosesContainer(data, i+1):
-			i++ // trailing comma: drop it
+		case s.peek() == '"':
+			s.copyString()
+		case s.peek() == ',' && s.nextClosesContainer():
+			s.pos++ // trailing comma: drop it
 		default:
-			out = append(out, data[i])
-			i++
+			s.copyByte()
 		}
 	}
-	return out
+	return s.out
 }
 
-// copyJSONString appends the string literal starting at data[i] (an opening
-// quote) to out, returning the new output and the index past the closing
-// quote. Escaped characters, including \", are copied verbatim.
-func copyJSONString(data []byte, i int, out []byte) ([]byte, int) {
-	out = append(out, data[i])
-	for i++; i < len(data); {
-		ch := data[i]
-		out = append(out, ch)
-		i++
-		if ch == '\\' && i < len(data) {
-			out = append(out, data[i])
-			i++
+// jsoncScanner walks JSONC input emitting cleaned output, in the shape of a
+// hand-rolled lexer: pos advances over data, out accumulates kept bytes.
+type jsoncScanner struct {
+	data []byte
+	pos  int
+	out  []byte
+}
+
+func newJSONCScanner(data []byte) *jsoncScanner {
+	return &jsoncScanner{data: data, out: make([]byte, 0, len(data))}
+}
+
+func (s *jsoncScanner) done() bool { return s.pos >= len(s.data) }
+
+func (s *jsoncScanner) peek() byte { return s.data[s.pos] }
+
+// copyByte keeps the current byte and advances.
+func (s *jsoncScanner) copyByte() {
+	s.out = append(s.out, s.data[s.pos])
+	s.pos++
+}
+
+// copyString keeps the string literal starting at the current opening quote,
+// through its closing quote. Escaped characters, including \", are copied
+// verbatim.
+func (s *jsoncScanner) copyString() {
+	s.copyByte() // opening quote
+	for !s.done() {
+		ch := s.peek()
+		s.copyByte()
+		if ch == '\\' && !s.done() {
+			s.copyByte()
 			continue
 		}
 		if ch == '"' {
-			break
+			return
 		}
 	}
-	return out, i
 }
 
-// lookingAt reports whether data[i] and data[i+1] are the given byte pair.
-func lookingAt(data []byte, i int, first, second byte) bool {
-	if data[i] != first {
+// atComment reports whether the scanner sits on '/' followed by marker
+// ('/' for line comments, '*' for block comments).
+func (s *jsoncScanner) atComment(marker byte) bool {
+	if s.peek() != '/' {
 		return false
 	}
-	return i+1 < len(data) && data[i+1] == second
+	return s.pos+1 < len(s.data) && s.data[s.pos+1] == marker
 }
 
 // skipLineComment advances past a // comment, leaving the terminating
-// newline (if any) for the caller to copy.
-func skipLineComment(data []byte, i int) int {
-	if j := bytes.IndexByte(data[i:], '\n'); j >= 0 {
-		return i + j
+// newline (if any) for the main loop to copy.
+func (s *jsoncScanner) skipLineComment() {
+	if j := bytes.IndexByte(s.data[s.pos:], '\n'); j >= 0 {
+		s.pos += j
+		return
 	}
-	return len(data)
+	s.pos = len(s.data)
 }
 
 // skipBlockComment advances past a /* */ comment, including the closer.
 // An unterminated comment consumes the rest of the input.
-func skipBlockComment(data []byte, i int) int {
-	if j := bytes.Index(data[i+2:], []byte("*/")); j >= 0 {
-		return i + 2 + j + 2
+func (s *jsoncScanner) skipBlockComment() {
+	if j := bytes.Index(s.data[s.pos+2:], []byte("*/")); j >= 0 {
+		s.pos += 2 + j + 2
+		return
 	}
-	return len(data)
+	s.pos = len(s.data)
 }
 
-// nextClosesContainer reports whether the next non-whitespace byte at or
-// after i closes a JSON container, making a preceding comma a trailing one.
-func nextClosesContainer(data []byte, i int) bool {
-	for i < len(data) && isJSONSpace(data[i]) {
+// nextClosesContainer reports whether the next non-whitespace byte after the
+// current one closes a JSON container, making a preceding comma trailing.
+func (s *jsoncScanner) nextClosesContainer() bool {
+	i := s.pos + 1
+	for i < len(s.data) && isJSONSpace(s.data[i]) {
 		i++
 	}
-	if i >= len(data) {
+	if i >= len(s.data) {
 		return false
 	}
-	return data[i] == '}' || data[i] == ']'
+	return s.data[i] == '}' || s.data[i] == ']'
 }
 
 func isJSONSpace(c byte) bool {

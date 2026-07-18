@@ -55,19 +55,25 @@ func (h *HandlerRegistry) archValidate(ctx context.Context, args ArchValidateArg
 
 	customRules := h.loadCustomRules(path)
 	detectedViolations := detector.ValidateGraph(graph, customRules)
-	violations := formatViolations(detectedViolations)
 
-	switch args.Baseline {
-	case "":
+	if args.Baseline == "" {
+		violations := formatViolations(detectedViolations)
 		return &ArchValidateResult{
 			Valid:      len(violations) == 0,
 			Violations: violations,
 			Summary:    fmt.Sprintf("Validation complete: %d violations found", len(violations)),
 		}, nil
+	}
+
+	file, err := baselineFilePath(args.BaselineFile, path)
+	if err != nil {
+		return nil, err
+	}
+	switch args.Baseline {
 	case "write":
-		return h.writeValidateBaseline(path, args.BaselineFile, detectedViolations, violations)
+		return writeValidateBaseline(file, detectedViolations)
 	case "check":
-		return h.checkValidateBaseline(path, args.BaselineFile, detectedViolations, violations)
+		return checkValidateBaseline(file, detectedViolations)
 	default:
 		return nil, fmt.Errorf("invalid baseline mode %q: must be \"write\" or \"check\" (or omit for plain validation)", args.Baseline)
 	}
@@ -102,15 +108,12 @@ func baselineFilePath(override, repoPath string) (string, error) {
 // baseline="check" runs fail only on violations that aren't in this file.
 // This is the adoption ratchet — strict rules on a legacy codebase without a
 // red build on day one. Commit the file so the whole team shares the ratchet.
-func (h *HandlerRegistry) writeValidateBaseline(repoPath, override string, detected []detector.Violation, formatted []string) (*ArchValidateResult, error) {
-	file, err := baselineFilePath(override, repoPath)
-	if err != nil {
-		return nil, err
-	}
+func writeValidateBaseline(file string, detected []detector.Violation) (*ArchValidateResult, error) {
 	baseline := detector.NewBaseline(detected)
 	if err := detector.SaveBaseline(file, baseline); err != nil {
 		return nil, err
 	}
+	formatted := formatViolations(detected)
 	return &ArchValidateResult{
 		Valid:        len(formatted) == 0,
 		Violations:   formatted,
@@ -122,11 +125,7 @@ func (h *HandlerRegistry) writeValidateBaseline(repoPath, override string, detec
 // checkValidateBaseline validates against the saved baseline. Valid reflects
 // only NEW violations; the full list stays in Violations so a baseline can
 // change the verdict but never hide findings.
-func (h *HandlerRegistry) checkValidateBaseline(repoPath, override string, detected []detector.Violation, formatted []string) (*ArchValidateResult, error) {
-	file, err := baselineFilePath(override, repoPath)
-	if err != nil {
-		return nil, err
-	}
+func checkValidateBaseline(file string, detected []detector.Violation) (*ArchValidateResult, error) {
 	baseline, err := detector.LoadBaseline(file)
 	if err != nil {
 		if os.IsNotExist(errors.Unwrap(err)) {
@@ -135,6 +134,7 @@ func (h *HandlerRegistry) checkValidateBaseline(repoPath, override string, detec
 		return nil, err
 	}
 	fresh, grandfathered := detector.SplitKnown(detected, baseline)
+	formatted := formatViolations(detected)
 	return &ArchValidateResult{
 		Valid:         len(fresh) == 0,
 		Violations:    formatted,
