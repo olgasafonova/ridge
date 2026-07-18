@@ -109,6 +109,11 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.7.2
+          # Skip `golangci-lint config verify`, which fetches a JSON schema
+          # from golangci-lint.run at runtime and intermittently fails the job
+          # with "context deadline exceeded" when that host is slow/unreachable.
+          # The config is already validated by the lint run itself.
+          verify: false
 
   clean-clone:
     # Belt-and-suspenders: builds and tests from a pristine `git clone` with no
