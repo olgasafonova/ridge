@@ -237,11 +237,19 @@ func (g *ArchGraph) Merge(other *ArchGraph) {
 }
 
 // HasCycle checks for circular dependencies using DFS.
+//
+// Import- and wikilink-mediated dependencies target unresolved "import:<path>"
+// strings on the raw edges, so DFS over raw edges never closes those cycles.
+// Resolving edges first makes import-mediated cycles visible.
 func (g *ArchGraph) HasCycle() bool {
+	// ResolvedEdges takes its own RLock, so gather resolved edges before
+	// acquiring the lock below to avoid a re-entrant read-lock deadlock.
+	resolved := g.ResolvedEdges()
+
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	v := newCycleVisitor(g.edges)
+	v := newCycleVisitor(resolved, g.edges)
 	for id := range g.nodes {
 		if v.visited[id] {
 			continue
@@ -260,10 +268,19 @@ type cycleVisitor struct {
 	inStack map[string]bool
 }
 
-func newCycleVisitor(edges []*Edge) *cycleVisitor {
+// newCycleVisitor builds DFS adjacency from resolved dependency edges, which
+// carry concrete node-ID targets so import-mediated cycles form. ResolvedEdges
+// drops self-loops, so raw is scanned to recover self-dependencies (a node
+// importing itself is still a cycle).
+func newCycleVisitor(resolved, raw []*Edge) *cycleVisitor {
 	adj := make(map[string][]string)
-	for _, e := range edges {
+	for _, e := range resolved {
 		if e.Type == EdgeDependency {
+			adj[e.Source] = append(adj[e.Source], e.Target)
+		}
+	}
+	for _, e := range raw {
+		if e.Type == EdgeDependency && e.Source == e.Target {
 			adj[e.Source] = append(adj[e.Source], e.Target)
 		}
 	}

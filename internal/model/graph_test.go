@@ -171,6 +171,35 @@ func TestHasCycle_NoCycleWithNonDependencyEdges(t *testing.T) {
 	}
 }
 
+func TestHasCycle_ImportMediated(t *testing.T) {
+	// Two packages that import each other. Raw edges target unresolved
+	// "import:<path>" strings; only after resolution does the a<->b cycle
+	// become visible to DFS.
+	g := NewGraph("/tmp/project")
+	g.AddNode(&Node{ID: "pkg:a", Name: "A", Type: NodePackage, Path: "/tmp/project/internal/a"})
+	g.AddNode(&Node{ID: "pkg:b", Name: "B", Type: NodePackage, Path: "/tmp/project/internal/b"})
+
+	g.AddEdge(&Edge{Source: "pkg:a", Target: "import:github.com/user/project/internal/b", Type: EdgeDependency, Confidence: 0.9})
+	g.AddEdge(&Edge{Source: "pkg:b", Target: "import:github.com/user/project/internal/a", Type: EdgeDependency, Confidence: 0.9})
+
+	if !g.HasCycle() {
+		t.Fatal("import-mediated cycle a<->b should be detected after edge resolution")
+	}
+}
+
+func TestHasCycle_SelfLoopRawEdge(t *testing.T) {
+	// A node depending on itself is a cycle. ResolvedEdges drops self-loops,
+	// so HasCycle must still catch the raw self-dependency edge.
+	g := NewGraph("/tmp")
+	g.AddNode(&Node{ID: "a", Name: "A", Type: NodePackage})
+
+	g.AddEdge(&Edge{Source: "a", Target: "a", Type: EdgeDependency})
+
+	if !g.HasCycle() {
+		t.Fatal("self-loop a->a should be detected as a cycle")
+	}
+}
+
 func TestSummary(t *testing.T) {
 	g := NewGraph("/tmp/myproject")
 	g.AddNode(&Node{ID: "svc:api", Name: "API", Type: NodeService})

@@ -105,6 +105,27 @@ func TestCompare_CircularDependency(t *testing.T) {
 	}
 }
 
+func TestCompare_CircularDependency_ImportMediated(t *testing.T) {
+	// Go/TS imports target unresolved "import:<path>" strings on raw edges.
+	// The drift cycle check must resolve edges before DFS, otherwise this
+	// mutual import cycle is a false negative in cycle_introduced drift.
+	base := model.NewGraph("/tmp/project")
+	base.AddNode(&model.Node{ID: "pkg:a", Name: "A", Type: model.NodePackage, Path: "/tmp/project/internal/a"})
+	base.AddNode(&model.Node{ID: "pkg:b", Name: "B", Type: model.NodePackage, Path: "/tmp/project/internal/b"})
+	base.AddEdge(&model.Edge{Source: "pkg:a", Target: "import:github.com/user/project/internal/b", Type: model.EdgeDependency, Confidence: 0.9})
+
+	current := model.NewGraph("/tmp/project")
+	current.AddNode(&model.Node{ID: "pkg:a", Name: "A", Type: model.NodePackage, Path: "/tmp/project/internal/a"})
+	current.AddNode(&model.Node{ID: "pkg:b", Name: "B", Type: model.NodePackage, Path: "/tmp/project/internal/b"})
+	current.AddEdge(&model.Edge{Source: "pkg:a", Target: "import:github.com/user/project/internal/b", Type: model.EdgeDependency, Confidence: 0.9})
+	current.AddEdge(&model.Edge{Source: "pkg:b", Target: "import:github.com/user/project/internal/a", Type: model.EdgeDependency, Confidence: 0.9})
+
+	report := Compare(base, current)
+	if report.MaxSeverity != model.SeverityCritical {
+		t.Fatalf("import-mediated circular dependency should be critical, got %s", report.MaxSeverity)
+	}
+}
+
 func TestCompare_ModifiedNode(t *testing.T) {
 	base := model.NewGraph("/tmp")
 	base.AddNode(&model.Node{ID: "svc:api", Name: "API v1", Type: model.NodeService})
