@@ -24,6 +24,47 @@ var sensitiveDotDirs = []string{
 	".config/gcloud",
 }
 
+// AllowedDirsEnv names the environment variable that opts the server into an
+// allowlist for scan roots. Its value is a PATH-style list of absolute
+// directory paths (colon-separated on Unix, os.PathListSeparator generally).
+// When set, ValidateScanPath refuses any scan whose symlink-resolved target is
+// not at or under one of the listed directories. When unset, scans fall back to
+// the sensitive-root/dotdir denylist only.
+const AllowedDirsEnv = "RIDGE_ALLOWED_DIRS"
+
+// AllowedDirs parses AllowedDirsEnv into a list of symlink-resolved absolute
+// directories. The bool reports whether an allowlist is configured at all: it
+// is true whenever the env var holds any non-whitespace content, even if every
+// entry failed to resolve. That makes a set-but-unusable allowlist fail closed
+// (nothing matches an empty dir list, so every scan is refused) rather than
+// silently reverting to permit-all. When the env var is unset or blank the bool
+// is false and the caller should apply denylist-only behavior.
+func AllowedDirs() ([]string, bool) {
+	raw := os.Getenv(AllowedDirsEnv)
+	if strings.TrimSpace(raw) == "" {
+		return nil, false
+	}
+	var dirs []string
+	for _, entry := range strings.Split(raw, string(os.PathListSeparator)) {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		abs, err := filepath.Abs(entry)
+		if err != nil {
+			continue
+		}
+		// Resolve symlinks so containment compares what the kernel opens, not
+		// the lexical path (the HG-5 idiom, applied to the allowlist side too).
+		if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil {
+			dirs = append(dirs, resolved)
+		} else {
+			dirs = append(dirs, filepath.Clean(abs))
+		}
+	}
+	return dirs, true
+}
+
 // ValidateScanPath checks that a path is safe for scanning.
 // Returns an error if the path is empty, doesn't exist, is not a directory,
 // or points to a sensitive location.
@@ -54,7 +95,31 @@ func ValidateScanPath(path string) error {
 		return fmt.Errorf("path is not a directory: %s", absPath)
 	}
 
+	if dirs, ok := AllowedDirs(); ok {
+		// Resolve the scan path's symlinks before the containment check so a
+		// symlink at or under an allowed dir that points outside it is refused,
+		// and so t.TempDir()-style paths (/var -> /private/var on macOS) match
+		// consistently against the already-resolved allowlist entries.
+		resolvedScan := absPath
+		if r, rerr := filepath.EvalSymlinks(absPath); rerr == nil {
+			resolvedScan = r
+		}
+		if !anyContains(dirs, resolvedScan) {
+			return fmt.Errorf("scanning %s is not allowed: path is outside the %s allowlist", absPath, AllowedDirsEnv)
+		}
+	}
+
 	return nil
+}
+
+// anyContains reports whether resolvedPath equals or sits under any of dirs.
+func anyContains(dirs []string, resolvedPath string) bool {
+	for _, d := range dirs {
+		if pathIsAtOrUnder(resolvedPath, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // bothPaths returns absPath plus its symlink-resolved form so sensitivity

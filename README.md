@@ -284,6 +284,36 @@ The stats in the response show what happened:
 
 First scan of a 500-file project takes a few seconds. Follow-up scans after editing 3 files take milliseconds.
 
+## Security
+
+### Restricting scan roots (`RIDGE_ALLOWED_DIRS`)
+
+Every scan tool returns short, masked source samples from whatever directory it is pointed at. By default ridge will scan any readable directory except a built-in denylist of sensitive locations (`/etc`, `/proc`, `/sys`, `/dev`, and home dotfiles like `.ssh`, `.gnupg`, `.aws`, `.config/gcloud`). That denylist is a floor, not an allowlist: it blocks known-sensitive paths but still permits scanning anywhere else.
+
+To flip this to opt-in, set `RIDGE_ALLOWED_DIRS` to a colon-separated list of absolute directory paths (PATH-style). When set, ridge refuses any scan whose target resolves to a location outside those directories:
+
+```json
+{
+  "mcpServers": {
+    "ridge": {
+      "command": "/path/to/ridge",
+      "args": [],
+      "env": {
+        "RIDGE_ALLOWED_DIRS": "/home/you/Projects:/home/you/work/repos"
+      }
+    }
+  }
+}
+```
+
+Details:
+
+- **Symlink-resolved containment.** Both the scan target and the allowlisted directories are resolved with `filepath.EvalSymlinks` before the containment check, so a symlink placed at or under an allowlisted directory cannot redirect a scan to an outside target.
+- **Fail closed when misconfigured.** If `RIDGE_ALLOWED_DIRS` is set but none of its entries resolve to a real directory, every scan is refused rather than reverting to permit-all.
+- **Startup notice.** On launch, ridge logs whether the allowlist is active (with the resolved directories) or unset. An unset allowlist logs a one-line warning so the permissive default is visible in the server logs.
+
+The `RIDGE_ALLOW_INREPO_RULES` variable is separate: it opts into loading a repo's own `.arch-rules.yaml`, which is otherwise ignored to prevent a scanned repo from downgrading its own architecture-rule violations.
+
 ## Development
 
 ```bash

@@ -12,6 +12,7 @@ import (
 	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/olgasafonova/ridge/internal/safepath"
 	"github.com/olgasafonova/ridge/tools"
 	"github.com/olgasafonova/ridge/tracing"
 )
@@ -27,6 +28,15 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+
+	// Announce the scan-root allowlist posture once at startup. Unset means
+	// scans are permitted on any readable directory (minus the sensitive-path
+	// denylist); operators who want to restrict scan roots set RIDGE_ALLOWED_DIRS.
+	if dirs, ok := safepath.AllowedDirs(); ok {
+		logger.Info("scan-root allowlist active", "env", safepath.AllowedDirsEnv, "dirs", dirs)
+	} else {
+		logger.Warn("scan-root allowlist unset: scans permitted on any readable directory except the sensitive-path denylist; set RIDGE_ALLOWED_DIRS (colon-separated absolute paths) to restrict", "env", safepath.AllowedDirsEnv)
+	}
 
 	// Initialize tracing
 	tracingConfig := tracing.DefaultConfig()

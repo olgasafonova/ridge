@@ -117,6 +117,87 @@ func TestValidateOutputPath_RejectsHasPrefixSiblingTrick(t *testing.T) {
 	}
 }
 
+func TestValidateScanPath_AllowlistPermitsInside(t *testing.T) {
+	allowed := t.TempDir()
+	t.Setenv(AllowedDirsEnv, allowed)
+
+	// The allowlisted root itself is a valid scan target.
+	if err := ValidateScanPath(allowed); err != nil {
+		t.Fatalf("scan of allowlisted root should pass: %v", err)
+	}
+
+	// A directory nested under the allowlisted root is also valid.
+	sub := filepath.Join(allowed, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateScanPath(sub); err != nil {
+		t.Fatalf("scan of dir under allowlist should pass: %v", err)
+	}
+}
+
+func TestValidateScanPath_AllowlistRefusesOutside(t *testing.T) {
+	allowed := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv(AllowedDirsEnv, allowed)
+
+	if err := ValidateScanPath(outside); err == nil {
+		t.Fatal("expected refusal: scan target outside allowlist")
+	}
+}
+
+func TestValidateScanPath_AllowlistMultipleDirs(t *testing.T) {
+	a := t.TempDir()
+	b := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv(AllowedDirsEnv, a+string(os.PathListSeparator)+b)
+
+	if err := ValidateScanPath(a); err != nil {
+		t.Fatalf("first allowlisted dir should pass: %v", err)
+	}
+	if err := ValidateScanPath(b); err != nil {
+		t.Fatalf("second allowlisted dir should pass: %v", err)
+	}
+	if err := ValidateScanPath(outside); err == nil {
+		t.Fatal("expected refusal: dir outside a multi-entry allowlist")
+	}
+}
+
+func TestValidateScanPath_AllowlistUnsetPermits(t *testing.T) {
+	// Explicitly blank: falls back to denylist-only, so an ordinary temp dir
+	// remains scannable.
+	t.Setenv(AllowedDirsEnv, "")
+	dir := t.TempDir()
+	if err := ValidateScanPath(dir); err != nil {
+		t.Fatalf("unset allowlist should permit an ordinary dir: %v", err)
+	}
+}
+
+// TestValidateScanPath_AllowlistRefusesSymlinkEscape is the allowlist analogue
+// of the ValidateOutputPath symlink-escape regression: a symlink placed at or
+// under an allowlisted root must not launder a scan of a directory outside the
+// allowlist. Containment is checked on the symlink-resolved target.
+func TestValidateScanPath_AllowlistRefusesSymlinkEscape(t *testing.T) {
+	allowed := t.TempDir()
+	outside := t.TempDir()
+
+	secret := filepath.Join(outside, "secret")
+	if err := os.MkdirAll(secret, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(allowed, "trapdoor")
+	if err := os.Symlink(secret, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+	t.Setenv(AllowedDirsEnv, allowed)
+
+	// allowed/trapdoor resolves to outside/secret, which is not under the
+	// allowlist, so the scan must be refused.
+	if err := ValidateScanPath(link); err == nil {
+		t.Fatal("expected refusal: symlink under allowlist escapes to an outside dir")
+	}
+}
+
 func TestValidateScanPath_SensitiveDotDirs(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {
