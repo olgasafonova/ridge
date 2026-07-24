@@ -1,7 +1,8 @@
 # Ridge
 
-[![Go Report Card](https://goreportcard.com/badge/github.com/olgasafonova/ridge)](https://goreportcard.com/report/github.com/olgasafonova/ridge)
+![lint](https://github.com/olgasafonova/ridge/actions/workflows/ci.yml/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+<!-- CodeScene Code Health badge: add after onboarding repo at codescene.io -->
 
 An MCP server that reverse-engineers architecture from a directory tree. Point it at code (Go, TypeScript, Python) and it returns services, packages, databases, queues, endpoints, and their relationships as a structured graph. Point it at markdown (Obsidian vaults, doc trees) and wiki-links plus relative `.md` links become dependency edges in the same graph model. Generate diagrams in 9 formats including a self-contained D3 force-directed page for hub-spoke graphs. Detect drift between any two branches, tags, or commits. Validate architecture rules. Track how the system evolves over time.
 
