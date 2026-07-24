@@ -87,6 +87,15 @@ func ValidateScanPath(path string) error {
 		return fmt.Errorf("scanning %s is not allowed", hit)
 	}
 
+	if err := requireDir(absPath); err != nil {
+		return err
+	}
+
+	return checkAllowlist(absPath)
+}
+
+// requireDir verifies that absPath exists and is a directory.
+func requireDir(absPath string) error {
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return fmt.Errorf("path does not exist: %w", err)
@@ -94,21 +103,26 @@ func ValidateScanPath(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("path is not a directory: %s", absPath)
 	}
+	return nil
+}
 
-	if dirs, ok := AllowedDirs(); ok {
-		// Resolve the scan path's symlinks before the containment check so a
-		// symlink at or under an allowed dir that points outside it is refused,
-		// and so t.TempDir()-style paths (/var -> /private/var on macOS) match
-		// consistently against the already-resolved allowlist entries.
-		resolvedScan := absPath
-		if r, rerr := filepath.EvalSymlinks(absPath); rerr == nil {
-			resolvedScan = r
-		}
-		if !anyContains(dirs, resolvedScan) {
-			return fmt.Errorf("scanning %s is not allowed: path is outside the %s allowlist", absPath, AllowedDirsEnv)
-		}
+// checkAllowlist enforces the RIDGE_ALLOWED_DIRS allowlist when configured.
+// The scan path's symlinks are resolved before the containment check so a
+// symlink at or under an allowed dir that points outside it is refused, and so
+// t.TempDir()-style paths (/var -> /private/var on macOS) match consistently
+// against the already-resolved allowlist entries.
+func checkAllowlist(absPath string) error {
+	dirs, ok := AllowedDirs()
+	if !ok {
+		return nil
 	}
-
+	resolvedScan := absPath
+	if r, rerr := filepath.EvalSymlinks(absPath); rerr == nil {
+		resolvedScan = r
+	}
+	if !anyContains(dirs, resolvedScan) {
+		return fmt.Errorf("scanning %s is not allowed: path is outside the %s allowlist", absPath, AllowedDirsEnv)
+	}
 	return nil
 }
 

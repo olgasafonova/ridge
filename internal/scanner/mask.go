@@ -85,14 +85,26 @@ func redactKeyedValue(match string) string {
 	if strings.Contains(lkey, "author") && !strings.Contains(lkey, "authoriz") {
 		return match
 	}
-	if len(val) >= 2 && (val[0] == '"' || val[0] == '\'' || val[0] == '`') {
-		q := string(val[0])
+	if q, quoted := openingQuote(val); quoted {
 		return key + q + redactedPlaceholder + q
 	}
 	if strings.Contains(val, "(") || safeAssignValues[strings.ToLower(val)] {
 		return match
 	}
 	return key + redactedPlaceholder
+}
+
+// openingQuote returns the quote character opening val when val is a quoted
+// string of at least two characters, or ok=false otherwise.
+func openingQuote(val string) (q string, ok bool) {
+	if len(val) < 2 {
+		return "", false
+	}
+	switch val[0] {
+	case '"', '\'', '`':
+		return string(val[0]), true
+	}
+	return "", false
 }
 
 // redactHighEntropyValue rewrites one quotedAssignValueRe match when the

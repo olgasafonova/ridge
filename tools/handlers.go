@@ -52,47 +52,39 @@ func NewHandlerRegistry(logger *slog.Logger) *HandlerRegistry {
 
 // RegisterAll registers all tools with the MCP server.
 func (h *HandlerRegistry) RegisterAll(server *mcp.Server) {
+	registrars := h.registrars()
 	for _, spec := range AllTools {
-		switch spec.Method {
-		case "ArchScan":
-			register(h, server, spec, h.archScan)
-		case "ArchFocus":
-			register(h, server, spec, h.archFocus)
-		case "ArchGenerate":
-			register(h, server, spec, h.archGenerate)
-		case "ArchDependencies":
-			register(h, server, spec, h.archDependencies)
-		case "ArchBlastRadius":
-			register(h, server, spec, h.archBlastRadius)
-		case "ArchDataflow":
-			register(h, server, spec, h.archDataflow)
-		case "ArchBoundaries":
-			register(h, server, spec, h.archBoundaries)
-		case "ArchDiff":
-			register(h, server, spec, h.archDiff)
-		case "ArchDrift":
-			register(h, server, spec, h.archDrift)
-		case "ArchDriftExplain":
-			register(h, server, spec, h.archDriftExplain)
-		case "ArchValidate":
-			register(h, server, spec, h.archValidate)
-		case "ArchHistory":
-			register(h, server, spec, h.archHistory)
-		case "ArchSnapshot":
-			register(h, server, spec, h.archSnapshot)
-		case "ArchMetrics":
-			register(h, server, spec, h.archMetrics)
-		case "ArchExplain":
-			register(h, server, spec, h.archExplain)
-		case "ArchRecommend":
-			register(h, server, spec, h.archRecommend)
-		case "ArchRegistryAdd":
-			register(h, server, spec, h.archRegistryAdd)
-		case "ArchRegistryRemove":
-			register(h, server, spec, h.archRegistryRemove)
-		case "ArchRegistryList":
-			register(h, server, spec, h.archRegistryList)
+		if registerTool, ok := registrars[spec.Method]; ok {
+			registerTool(server, spec)
 		}
+	}
+}
+
+// registrars maps each ToolSpec.Method name to a closure that performs the
+// typed generic registration for that handler. The closures exist because
+// register is generic over per-handler Args/Result types, which rules out a
+// homogeneous method-value table.
+func (h *HandlerRegistry) registrars() map[string]func(*mcp.Server, ToolSpec) {
+	return map[string]func(*mcp.Server, ToolSpec){
+		"ArchScan":           func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archScan) },
+		"ArchFocus":          func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archFocus) },
+		"ArchGenerate":       func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archGenerate) },
+		"ArchDependencies":   func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archDependencies) },
+		"ArchBlastRadius":    func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archBlastRadius) },
+		"ArchDataflow":       func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archDataflow) },
+		"ArchBoundaries":     func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archBoundaries) },
+		"ArchDiff":           func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archDiff) },
+		"ArchDrift":          func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archDrift) },
+		"ArchDriftExplain":   func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archDriftExplain) },
+		"ArchValidate":       func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archValidate) },
+		"ArchHistory":        func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archHistory) },
+		"ArchSnapshot":       func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archSnapshot) },
+		"ArchMetrics":        func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archMetrics) },
+		"ArchExplain":        func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archExplain) },
+		"ArchRecommend":      func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archRecommend) },
+		"ArchRegistryAdd":    func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archRegistryAdd) },
+		"ArchRegistryRemove": func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archRegistryRemove) },
+		"ArchRegistryList":   func(s *mcp.Server, spec ToolSpec) { register(h, s, spec, h.archRegistryList) },
 	}
 }
 

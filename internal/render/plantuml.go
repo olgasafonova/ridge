@@ -75,27 +75,22 @@ func plantUMLNodeGroup(sb *strings.Builder, nodes []*model.Node, nodeType model.
 	sb.WriteString("}\n\n")
 }
 
+// plantUMLKeywords maps node types to their PlantUML element keywords. Types
+// not listed here render as plain rectangles.
+var plantUMLKeywords = map[model.NodeType]string{
+	model.NodeService:     "component",
+	model.NodeDatabase:    "database",
+	model.NodeQueue:       "queue",
+	model.NodeCache:       "storage",
+	model.NodeExternalAPI: "cloud",
+	model.NodeEndpoint:    "usecase",
+}
+
 func plantUMLKeyword(t model.NodeType) string {
-	switch t {
-	case model.NodeService:
-		return "component"
-	case model.NodeDatabase:
-		return "database"
-	case model.NodeQueue:
-		return "queue"
-	case model.NodeCache:
-		return "storage"
-	case model.NodeExternalAPI:
-		return "cloud"
-	case model.NodeEndpoint:
-		return "usecase"
-	case model.NodeModule:
-		return "rectangle"
-	case model.NodePackage:
-		return "rectangle"
-	default:
-		return "rectangle"
+	if kw, ok := plantUMLKeywords[t]; ok {
+		return kw
 	}
+	return "rectangle"
 }
 
 func plantUMLArrow(t model.EdgeType) string {

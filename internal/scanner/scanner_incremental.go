@@ -31,8 +31,13 @@ func (s *Scanner) partitionForIncremental(files []fileWork, state *ScanState, st
 	toAnalyze = collectChangedWork(changes.Added, changes.Modified, extByPath)
 	stats.FilesChanged = len(toAnalyze)
 
-	sigByExt := s.signatureByExt()
-	unchangedAnalyze, cached := classifyUnchanged(state, changes.Unchanged, extByPath, sigByExt, stats)
+	classify := classifyContext{
+		state:     state,
+		extByPath: extByPath,
+		sigByExt:  s.signatureByExt(),
+		stats:     stats,
+	}
+	unchangedAnalyze, cached := classifyUnchanged(classify, changes.Unchanged)
 	toAnalyze = append(toAnalyze, unchangedAnalyze...)
 
 	for _, path := range changes.Deleted {
@@ -84,28 +89,37 @@ func collectChangedWork(added, modified []string, extByPath map[string]string) [
 	return out
 }
 
+// classifyContext bundles the lookups and counters classifyUnchanged needs to
+// decide whether a cached entry can be reused.
+type classifyContext struct {
+	state     *ScanState        // prior scan state holding cached analyzer output
+	extByPath map[string]string // path → file extension lookup
+	sigByExt  map[string]string // extension → current analyzer signature
+	stats     *ScanStats        // counters updated for cache hits and invalidations
+}
+
 // classifyUnchanged splits unchanged paths into two buckets: those with cached
 // analyzer output that matches the current analyzer signature (reused as-is)
 // and those whose cache is missing or stale (must be re-analyzed). Updates
 // stats.FilesCached for cache hits and stats.FilesInvalidated for entries
 // rejected due to signature mismatch.
-func classifyUnchanged(state *ScanState, unchanged []string, extByPath map[string]string, sigByExt map[string]string, stats *ScanStats) (toAnalyze []fileWork, cached []analyzeResult) {
+func classifyUnchanged(c classifyContext, unchanged []string) (toAnalyze []fileWork, cached []analyzeResult) {
 	for _, path := range unchanged {
-		ext := extByPath[path]
-		cachedSig, nodes, edges, ok := state.CachedResult(path)
+		ext := c.extByPath[path]
+		cachedSig, nodes, edges, ok := c.state.CachedResult(path)
 		if !ok {
 			toAnalyze = append(toAnalyze, fileWork{path: path, ext: ext})
 			continue
 		}
-		if cachedSig != sigByExt[ext] {
+		if cachedSig != c.sigByExt[ext] {
 			// Analyzer behavior has changed since this entry was cached
 			// (or entry predates signature tracking). Re-analyze.
 			toAnalyze = append(toAnalyze, fileWork{path: path, ext: ext})
-			stats.FilesInvalidated++
+			c.stats.FilesInvalidated++
 			continue
 		}
 		cached = append(cached, analyzeResult{nodes: nodes, edges: edges, path: path, ext: ext})
-		stats.FilesCached++
+		c.stats.FilesCached++
 	}
 	return toAnalyze, cached
 }

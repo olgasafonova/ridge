@@ -273,21 +273,34 @@ type cycleVisitor struct {
 // drops self-loops, so raw is scanned to recover self-dependencies (a node
 // importing itself is still a cycle).
 func newCycleVisitor(resolved, raw []*Edge) *cycleVisitor {
-	adj := make(map[string][]string)
-	for _, e := range resolved {
-		if e.Type == EdgeDependency {
-			adj[e.Source] = append(adj[e.Source], e.Target)
-		}
-	}
-	for _, e := range raw {
-		if e.Type == EdgeDependency && e.Source == e.Target {
-			adj[e.Source] = append(adj[e.Source], e.Target)
-		}
-	}
+	adj := dependencyAdjacency(resolved)
+	addSelfDependencies(adj, raw)
 	return &cycleVisitor{
 		adj:     adj,
 		visited: make(map[string]bool),
 		inStack: make(map[string]bool),
+	}
+}
+
+// dependencyAdjacency builds a source -> targets adjacency map from the
+// dependency edges in the given edge list.
+func dependencyAdjacency(edges []*Edge) map[string][]string {
+	adj := make(map[string][]string)
+	for _, e := range edges {
+		if e.Type == EdgeDependency {
+			adj[e.Source] = append(adj[e.Source], e.Target)
+		}
+	}
+	return adj
+}
+
+// addSelfDependencies recovers self-loop dependency edges from the raw edge
+// list (ResolvedEdges drops them, but a node importing itself is still a cycle).
+func addSelfDependencies(adj map[string][]string, raw []*Edge) {
+	for _, e := range raw {
+		if e.Type == EdgeDependency && e.Source == e.Target {
+			adj[e.Source] = append(adj[e.Source], e.Target)
+		}
 	}
 }
 

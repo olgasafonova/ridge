@@ -39,30 +39,54 @@ func ComputeGraphSignals(boundaries []Boundary, graph *model.ArchGraph) *GraphSi
 	dbSources := make(map[string]map[string]bool) // db node ID -> set of source boundaries
 
 	for _, e := range graph.ResolvedEdges() {
-		sb, sok := nodeBoundary[e.Source]
-		tb, tok := nodeBoundary[e.Target]
-		if sok && tok && sb != tb {
+		if crossesBoundary(nodeBoundary, e) {
 			gs.CrossBoundaryEdges++
 		}
-		if !sok {
-			continue
-		}
-		if target := graph.GetNode(e.Target); target != nil && target.Type == model.NodeDatabase {
-			if dbSources[e.Target] == nil {
-				dbSources[e.Target] = make(map[string]bool)
-			}
-			dbSources[e.Target][sb] = true
-		}
+		recordDatabaseTarget(graph, nodeBoundary, dbSources, e)
 	}
 
+	gs.SharedDatabaseIDs = sharedDatabaseIDs(dbSources)
+	gs.SharedDatabase = len(gs.SharedDatabaseIDs) > 0
+	return gs
+}
+
+// crossesBoundary reports whether the edge's source and target nodes are both
+// boundary-assigned and live in different boundaries.
+func crossesBoundary(nodeBoundary map[string]string, e *model.Edge) bool {
+	sb, sok := nodeBoundary[e.Source]
+	tb, tok := nodeBoundary[e.Target]
+	return sok && tok && sb != tb
+}
+
+// recordDatabaseTarget records the source boundary of an edge whose target is
+// a database node, building the db node ID -> source-boundary set used for
+// shared-database detection.
+func recordDatabaseTarget(graph *model.ArchGraph, nodeBoundary map[string]string, dbSources map[string]map[string]bool, e *model.Edge) {
+	sb, ok := nodeBoundary[e.Source]
+	if !ok {
+		return
+	}
+	target := graph.GetNode(e.Target)
+	if target == nil || target.Type != model.NodeDatabase {
+		return
+	}
+	if dbSources[e.Target] == nil {
+		dbSources[e.Target] = make(map[string]bool)
+	}
+	dbSources[e.Target][sb] = true
+}
+
+// sharedDatabaseIDs returns the sorted IDs of database nodes reached from two
+// or more distinct boundaries, or nil when none qualify.
+func sharedDatabaseIDs(dbSources map[string]map[string]bool) []string {
+	var ids []string
 	for dbID, sources := range dbSources {
 		if len(sources) >= 2 {
-			gs.SharedDatabase = true
-			gs.SharedDatabaseIDs = append(gs.SharedDatabaseIDs, dbID)
+			ids = append(ids, dbID)
 		}
 	}
-	sort.Strings(gs.SharedDatabaseIDs)
-	return gs
+	sort.Strings(ids)
+	return ids
 }
 
 // assignNodesToBoundaries maps each file-backed node ID to the boundary whose
