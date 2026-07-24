@@ -239,11 +239,13 @@ func parseHex(hex string) (r, g, b uint8, ok bool) {
 		return 0, 0, 0, false
 	}
 
-	rr, err1 := strconv.ParseUint(hex[0:2], 16, 8)
-	gg, err2 := strconv.ParseUint(hex[2:4], 16, 8)
-	bb, err3 := strconv.ParseUint(hex[4:6], 16, 8)
-	if err1 != nil || err2 != nil || err3 != nil {
-		return 0, 0, 0, false
+	var rgb [3]uint8
+	for i := range rgb {
+		v, err := strconv.ParseUint(hex[2*i:2*i+2], 16, 8)
+		if err != nil {
+			return 0, 0, 0, false
+		}
+		rgb[i] = uint8(v)
 	}
-	return uint8(rr), uint8(gg), uint8(bb), true
+	return rgb[0], rgb[1], rgb[2], true
 }

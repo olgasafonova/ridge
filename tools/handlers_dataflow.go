@@ -128,8 +128,25 @@ func (h *HandlerRegistry) archBoundaries(ctx context.Context, args ArchBoundarie
 			"path", path, "error", scanErr)
 	}
 
-	var boundaries []BoundaryInfo
-	for _, b := range result.Boundaries {
+	boundaries := toBoundaryInfos(result.Boundaries)
+
+	return &ArchBoundariesResult{
+		Topology:     string(result.Topology),
+		Boundaries:   boundaries,
+		Signals:      result.Signals,
+		GraphSignals: graphSignals,
+		Reason:       result.Reason,
+		Ambiguous:    result.Ambiguous,
+		Summary:      boundariesSummary(result, len(boundaries), graphSignals),
+	}, nil
+}
+
+// toBoundaryInfos converts detector boundaries to their response shape.
+// Returns an empty (non-nil) slice when there are no boundaries so the JSON
+// field renders as [] rather than null.
+func toBoundaryInfos(detected []detector.Boundary) []BoundaryInfo {
+	boundaries := make([]BoundaryInfo, 0, len(detected))
+	for _, b := range detected {
 		boundaries = append(boundaries, BoundaryInfo{
 			Name:    b.Name,
 			Path:    b.Path,
@@ -137,13 +154,14 @@ func (h *HandlerRegistry) archBoundaries(ctx context.Context, args ArchBoundarie
 			Markers: b.Markers,
 		})
 	}
+	return boundaries
+}
 
-	if boundaries == nil {
-		boundaries = []BoundaryInfo{}
-	}
-
+// boundariesSummary renders the one-line human summary for a boundary verdict,
+// appending graph-derived evidence when a scan produced it.
+func boundariesSummary(result *detector.BoundaryResult, boundaryCount int, graphSignals *detector.GraphSignals) string {
 	summary := fmt.Sprintf("Detected %s topology with %d boundaries (%s)",
-		result.Topology, len(boundaries), result.Reason)
+		result.Topology, boundaryCount, result.Reason)
 	summary += fmt.Sprintf("; %d deployable units", result.Signals.DeployableUnits)
 	if graphSignals != nil {
 		shared := "no shared database"
@@ -155,14 +173,5 @@ func (h *HandlerRegistry) archBoundaries(ctx context.Context, args ArchBoundarie
 	if result.Ambiguous {
 		summary += " — verdict is borderline; check signals"
 	}
-
-	return &ArchBoundariesResult{
-		Topology:     string(result.Topology),
-		Boundaries:   boundaries,
-		Signals:      result.Signals,
-		GraphSignals: graphSignals,
-		Reason:       result.Reason,
-		Ambiguous:    result.Ambiguous,
-		Summary:      summary,
-	}, nil
+	return summary
 }

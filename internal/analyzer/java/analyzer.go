@@ -459,6 +459,16 @@ type httpClientCallSyntax struct {
 	method string
 }
 
+// anyNil reports whether any of the given tree-sitter nodes is nil.
+func anyNil(nodes ...*sitter.Node) bool {
+	for _, n := range nodes {
+		if n == nil {
+			return true
+		}
+	}
+	return false
+}
+
 // parseHTTPClientCallSyntax recognizes a method_invocation as an HTTP client
 // call and returns the resolved verb plus the arguments node, or ok=false.
 func parseHTTPClientCallSyntax(node *sitter.Node, src []byte) (httpClientCallSyntax, bool) {
@@ -468,7 +478,7 @@ func parseHTTPClientCallSyntax(node *sitter.Node, src []byte) (httpClientCallSyn
 	obj := node.ChildByFieldName("object")
 	name := node.ChildByFieldName("name")
 	args := node.ChildByFieldName("arguments")
-	if obj == nil || name == nil || args == nil {
+	if anyNil(obj, name, args) {
 		return httpClientCallSyntax{}, false
 	}
 	if !httpClientObjects[obj.Content(src)] {

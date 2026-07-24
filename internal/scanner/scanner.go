@@ -120,17 +120,11 @@ func (s *Scanner) ScanWithOptions(ctx context.Context, rootPath string, opts Sca
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
-	if opts.Timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, opts.Timeout)
-		defer cancel()
-	}
+	ctx, cancel := withOptionalTimeout(ctx, opts.Timeout)
+	defer cancel()
 
 	mergedSkipDirs := s.mergeSkipDirs(opts.SkipDirs)
-	skipGlobs := opts.SkipGlobs
-	if !opts.IncludeTests {
-		skipGlobs = append(skipGlobs, defaultTestGlobs...)
-	}
+	skipGlobs := effectiveSkipGlobs(opts)
 
 	var stats ScanStats
 	files, walkSkipped, truncated, err := s.walkAndCollect(ctx, walkParams{
@@ -191,6 +185,25 @@ func (s *Scanner) ScanWithOptions(ctx context.Context, rootPath string, opts Sca
 		return result, ErrLimitReached
 	}
 	return result, nil
+}
+
+// withOptionalTimeout wraps ctx with a timeout when d is positive; otherwise
+// it returns a plain cancelable context so callers can defer cancel either way.
+func withOptionalTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d > 0 {
+		return context.WithTimeout(ctx, d)
+	}
+	return context.WithCancel(ctx)
+}
+
+// effectiveSkipGlobs returns the scan's skip globs, appending the default
+// test-file globs unless tests are explicitly included.
+func effectiveSkipGlobs(opts ScanOptions) []string {
+	skipGlobs := opts.SkipGlobs
+	if !opts.IncludeTests {
+		skipGlobs = append(skipGlobs, defaultTestGlobs...)
+	}
+	return skipGlobs
 }
 
 // SupportedExtensions returns all file extensions the scanner handles.

@@ -509,15 +509,7 @@ type httpClientCallSyntax struct {
 // parseHTTPClientCallSyntax recognizes a call node as `<obj>.<method>(...)`
 // where obj is a known HTTP client receiver and method is an HTTP verb.
 func parseHTTPClientCallSyntax(node *sitter.Node, src []byte) (httpClientCallSyntax, bool) {
-	if node.Type() != "call" {
-		return httpClientCallSyntax{}, false
-	}
-	fn := node.ChildByFieldName("function")
-	if fn == nil || fn.Type() != "attribute" {
-		return httpClientCallSyntax{}, false
-	}
-	obj := fn.ChildByFieldName("object")
-	attr := fn.ChildByFieldName("attribute")
+	obj, attr := callAttribute(node)
 	if obj == nil || attr == nil {
 		return httpClientCallSyntax{}, false
 	}
@@ -530,6 +522,20 @@ func parseHTTPClientCallSyntax(node *sitter.Node, src []byte) (httpClientCallSyn
 		return httpClientCallSyntax{}, false
 	}
 	return httpClientCallSyntax{args: args, method: methodName}, true
+}
+
+// callAttribute returns the object and attribute nodes of a call whose
+// function is an attribute access (`<obj>.<attr>(...)`), or nils when the
+// node is not that shape.
+func callAttribute(node *sitter.Node) (obj, attr *sitter.Node) {
+	if node.Type() != "call" {
+		return nil, nil
+	}
+	fn := node.ChildByFieldName("function")
+	if fn == nil || fn.Type() != "attribute" {
+		return nil, nil
+	}
+	return fn.ChildByFieldName("object"), fn.ChildByFieldName("attribute")
 }
 
 // matchHTTPClientCall recognizes a tree-sitter call node as an outbound HTTP

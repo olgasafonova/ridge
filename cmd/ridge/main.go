@@ -29,30 +29,53 @@ func main() {
 		Level: slog.LevelInfo,
 	}))
 
-	// Announce the scan-root allowlist posture once at startup. Unset means
-	// scans are permitted on any readable directory (minus the sensitive-path
-	// denylist); operators who want to restrict scan roots set RIDGE_ALLOWED_DIRS.
+	announceAllowlistPosture(logger)
+
+	shutdownTracing := setupTracing(logger)
+	defer shutdownTracing()
+
+	server := newServer(logger)
+	registry := tools.NewHandlerRegistry(logger)
+	registry.RegisterAll(server)
+
+	run(server, logger)
+}
+
+// announceAllowlistPosture logs the scan-root allowlist posture once at
+// startup. Unset means scans are permitted on any readable directory (minus
+// the sensitive-path denylist); operators who want to restrict scan roots set
+// RIDGE_ALLOWED_DIRS.
+func announceAllowlistPosture(logger *slog.Logger) {
 	if dirs, ok := safepath.AllowedDirs(); ok {
 		logger.Info("scan-root allowlist active", "env", safepath.AllowedDirsEnv, "dirs", dirs)
 	} else {
 		logger.Warn("scan-root allowlist unset: scans permitted on any readable directory except the sensitive-path denylist; set RIDGE_ALLOWED_DIRS (colon-separated absolute paths) to restrict", "env", safepath.AllowedDirsEnv)
 	}
+}
 
-	// Initialize tracing
+// setupTracing initializes OpenTelemetry tracing and returns the shutdown
+// function the caller must defer. Failures are non-fatal: the server runs
+// without tracing and the returned shutdown is a no-op.
+func setupTracing(logger *slog.Logger) func() {
 	tracingConfig := tracing.DefaultConfig()
 	tracingConfig.ServiceVersion = ServerVersion
-	shutdownTracing, err := tracing.Setup(context.Background(), tracingConfig)
+	shutdown, err := tracing.Setup(context.Background(), tracingConfig)
 	if err != nil {
 		logger.Warn("Failed to initialize tracing", "error", err)
-	} else if tracingConfig.Enabled {
-		defer func() { _ = shutdownTracing(context.Background()) }()
-		logger.Info("OpenTelemetry tracing enabled",
-			"endpoint", tracingConfig.OTLPEndpoint,
-			"service", tracingConfig.ServiceName)
+		return func() {}
 	}
+	if !tracingConfig.Enabled {
+		return func() {}
+	}
+	logger.Info("OpenTelemetry tracing enabled",
+		"endpoint", tracingConfig.OTLPEndpoint,
+		"service", tracingConfig.ServiceName)
+	return func() { _ = shutdown(context.Background()) }
+}
 
-	// Create MCP server
-	server := mcp.NewServer(&mcp.Implementation{
+// newServer creates the MCP server with capabilities and instructions.
+func newServer(logger *slog.Logger) *mcp.Server {
+	return mcp.NewServer(&mcp.Implementation{
 		Name:    ServerName,
 		Version: ServerVersion,
 	}, &mcp.ServerOptions{
@@ -61,7 +84,37 @@ func main() {
 		// Without this, AddTool triggers a notification before the client completes
 		// the initialize handshake, causing intermittent connection failures.
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: `Code to Arch MCP - Codebase Architecture Analysis
+		Instructions: serverInstructions,
+	})
+}
+
+// run serves stdio traffic until a SIGINT/SIGTERM arrives or the transport
+// closes.
+func run(server *mcp.Server, logger *slog.Logger) {
+	logger.Info("Starting Code to Arch MCP (stdio mode)",
+		"name", ServerName,
+		"version", ServerVersion,
+	)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go func() {
+		sig := <-sigChan
+		logger.Info("Shutdown signal received", "signal", sig.String())
+		cancel()
+	}()
+
+	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && err != context.Canceled {
+		log.Fatalf("Server error: %v", err)
+	}
+	logger.Info("Shutdown complete")
+}
+
+const serverInstructions = `Code to Arch MCP - Codebase Architecture Analysis
 
 ## Getting Started
 
@@ -141,34 +194,4 @@ Go (go/ast), TypeScript (tree-sitter), Python (tree-sitter)
 
 ## Output Formats
 
-mermaid, plantuml, c4, structurizr, drawio, excalidraw, json`,
-	})
-
-	// Register tools
-	registry := tools.NewHandlerRegistry(logger)
-	registry.RegisterAll(server)
-
-	ctx := context.Background()
-
-	logger.Info("Starting Code to Arch MCP (stdio mode)",
-		"name", ServerName,
-		"version", ServerVersion,
-	)
-
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	go func() {
-		sig := <-sigChan
-		logger.Info("Shutdown signal received", "signal", sig.String())
-		cancel()
-	}()
-
-	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil && err != context.Canceled {
-		log.Fatalf("Server error: %v", err)
-	}
-	logger.Info("Shutdown complete")
-}
+mermaid, plantuml, c4, structurizr, drawio, excalidraw, json`

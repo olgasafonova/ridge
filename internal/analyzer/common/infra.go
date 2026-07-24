@@ -64,7 +64,7 @@ func ParseServiceFromURL(rawURL string) (host string, ok bool) {
 	if err != nil {
 		return "", false
 	}
-	if u.Scheme != "" && u.Scheme != "http" && u.Scheme != "https" {
+	if !isHTTPScheme(u.Scheme) {
 		return "", false
 	}
 	h := u.Hostname()
@@ -72,6 +72,16 @@ func ParseServiceFromURL(rawURL string) (host string, ok bool) {
 		return "", false
 	}
 	return h, true
+}
+
+// isHTTPScheme reports whether scheme is empty (a relative URL) or one of the
+// HTTP schemes.
+func isHTTPScheme(scheme string) bool {
+	switch scheme {
+	case "", "http", "https":
+		return true
+	}
+	return false
 }
 
 // WalkTree performs a pre-order depth-first traversal of a tree-sitter node,

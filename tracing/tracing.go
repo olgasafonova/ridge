@@ -59,32 +59,15 @@ func Setup(ctx context.Context, config Config) (func(context.Context) error, err
 		return nil, err
 	}
 
-	var exporter sdktrace.SpanExporter
-	if config.OTLPEndpoint != "" {
-		exporter, err = otlptracehttp.New(ctx,
-			otlptracehttp.WithEndpoint(config.OTLPEndpoint),
-			otlptracehttp.WithInsecure(),
-		)
-	} else {
-		exporter, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
-	}
+	exporter, err := newExporter(ctx, config)
 	if err != nil {
 		return nil, err
-	}
-
-	var sampler sdktrace.Sampler
-	if config.SampleRate >= 1.0 {
-		sampler = sdktrace.AlwaysSample()
-	} else if config.SampleRate <= 0 {
-		sampler = sdktrace.NeverSample()
-	} else {
-		sampler = sdktrace.TraceIDRatioBased(config.SampleRate)
 	}
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
 		sdktrace.WithResource(res),
-		sdktrace.WithSampler(sampler),
+		sdktrace.WithSampler(newSampler(config.SampleRate)),
 	)
 
 	otel.SetTracerProvider(tp)
@@ -94,6 +77,31 @@ func Setup(ctx context.Context, config Config) (func(context.Context) error, err
 	))
 
 	return tp.Shutdown, nil
+}
+
+// newExporter builds the span exporter: OTLP over HTTP when an endpoint is
+// configured, pretty-printed stdout otherwise.
+func newExporter(ctx context.Context, config Config) (sdktrace.SpanExporter, error) {
+	if config.OTLPEndpoint != "" {
+		return otlptracehttp.New(ctx,
+			otlptracehttp.WithEndpoint(config.OTLPEndpoint),
+			otlptracehttp.WithInsecure(),
+		)
+	}
+	return stdouttrace.New(stdouttrace.WithPrettyPrint())
+}
+
+// newSampler maps a sample rate to the corresponding sampler: always at >= 1,
+// never at <= 0, ratio-based in between.
+func newSampler(rate float64) sdktrace.Sampler {
+	switch {
+	case rate >= 1.0:
+		return sdktrace.AlwaysSample()
+	case rate <= 0:
+		return sdktrace.NeverSample()
+	default:
+		return sdktrace.TraceIDRatioBased(rate)
+	}
 }
 
 // Tracer returns the named tracer.
