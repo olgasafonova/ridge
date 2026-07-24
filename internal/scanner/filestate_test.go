@@ -198,7 +198,7 @@ func TestClassifyUnchanged_SignatureInvalidation(t *testing.T) {
 	extByPath := map[string]string{f1: ".go"}
 	stats := &ScanStats{}
 
-	toAnalyze, cached := classifyUnchanged(state, []string{f1}, extByPath, sigByExt, stats)
+	toAnalyze, cached := classifyUnchanged(classifyContext{state: state, extByPath: extByPath, sigByExt: sigByExt, stats: stats}, []string{f1})
 
 	if len(cached) != 0 {
 		t.Errorf("expected 0 cached results (signature mismatch), got %d", len(cached))
@@ -230,7 +230,7 @@ func TestClassifyUnchanged_SignatureMatch(t *testing.T) {
 	extByPath := map[string]string{f1: ".go"}
 	stats := &ScanStats{}
 
-	toAnalyze, cached := classifyUnchanged(state, []string{f1}, extByPath, sigByExt, stats)
+	toAnalyze, cached := classifyUnchanged(classifyContext{state: state, extByPath: extByPath, sigByExt: sigByExt, stats: stats}, []string{f1})
 
 	if len(toAnalyze) != 0 {
 		t.Errorf("expected 0 files to re-analyze (signature match), got %d", len(toAnalyze))
@@ -264,7 +264,7 @@ func TestClassifyUnchanged_LegacyEntryInvalidates(t *testing.T) {
 	extByPath := map[string]string{f1: ".go"}
 	stats := &ScanStats{}
 
-	toAnalyze, cached := classifyUnchanged(state, []string{f1}, extByPath, sigByExt, stats)
+	toAnalyze, cached := classifyUnchanged(classifyContext{state: state, extByPath: extByPath, sigByExt: sigByExt, stats: stats}, []string{f1})
 
 	if len(cached) != 0 {
 		t.Errorf("expected legacy entry to invalidate, got %d cached", len(cached))
