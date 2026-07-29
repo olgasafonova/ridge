@@ -1,7 +1,7 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "generated_at": "2026-05-17T00:00:00Z",
-  "deslop_version": "2.1.0",
+  "deslop_version": "2.3.0",
   "scores": {
     "file_health": 85.0,
     "test_coverage": 73.7,
@@ -16,115 +16,153 @@
       "detector": "file_health",
       "severity": "warning",
       "key": "internal/analyzer/java/analyzer.go",
-      "summary": "internal/analyzer/java/analyzer.go (518 LOC)"
+      "summary": "internal/analyzer/java/analyzer.go (518 LOC)",
+      "fingerprint": "sha256:858777f220dbd7b1f66edce72bf6c77a4cecc609fa72510876e2a508ded8ce14",
+      "id": "8587"
     },
     {
       "detector": "file_health",
       "severity": "warning",
       "key": "internal/analyzer/python/analyzer.go",
-      "summary": "internal/analyzer/python/analyzer.go (630 LOC)"
+      "summary": "internal/analyzer/python/analyzer.go (630 LOC)",
+      "fingerprint": "sha256:2f1b041dff785817ab3e146a2f472e21cbffe0984fe09b2e76d2ae8f6db8c649",
+      "id": "2f1b"
     },
     {
       "detector": "file_health",
       "severity": "warning",
       "key": "internal/analyzer/typescript/analyzer.go",
-      "summary": "internal/analyzer/typescript/analyzer.go (734 LOC)"
+      "summary": "internal/analyzer/typescript/analyzer.go (734 LOC)",
+      "fingerprint": "sha256:3605bf682c7ea3aba408cbf5210278b5b8f0fb11370582dcb34aaf8a4d982e45",
+      "id": "3605"
     },
     {
       "detector": "structural_quality",
       "severity": "warning",
       "key": "god_package:internal/render",
-      "summary": "internal/render has 21 source files"
+      "summary": "internal/render has 21 source files",
+      "fingerprint": "sha256:f2d1184c20abb61542c8fe9544863659f2ccf75b887f544d0581446de0f31829",
+      "id": "f2d1"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "internal/detector/boundary_markers.go",
-      "summary": "internal/detector/boundary_markers.go has no test file"
+      "summary": "internal/detector/boundary_markers.go has no test file",
+      "fingerprint": "sha256:7ec344c4f8618eee5d8099c6f5fcfa7886fface32699c0b82b215f94f18e34de",
+      "id": "7ec3"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "internal/detector/rules.go",
-      "summary": "internal/detector/rules.go has no test file"
+      "summary": "internal/detector/rules.go has no test file",
+      "fingerprint": "sha256:ef765b7a14ceb0eb0dff4ff96643e823aedacca8145de584a23da65bac73b182",
+      "id": "ef76"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "internal/model/graph_resolver.go",
-      "summary": "internal/model/graph_resolver.go has no test file"
+      "summary": "internal/model/graph_resolver.go has no test file",
+      "fingerprint": "sha256:67ebaa326c7c3a13965c5f348d7f0ef7d2bfe83132e3b897d202fc99c47fb5e7",
+      "id": "67eb"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "internal/scanner/scanner_analyze.go",
-      "summary": "internal/scanner/scanner_analyze.go has no test file"
+      "summary": "internal/scanner/scanner_analyze.go has no test file",
+      "fingerprint": "sha256:cbea72beecb068c7de092af80f9cee1bd204ca8f6eb957259753cfd3afeabf04",
+      "id": "cbea"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "internal/scanner/scanner_incremental.go",
-      "summary": "internal/scanner/scanner_incremental.go has no test file"
+      "summary": "internal/scanner/scanner_incremental.go has no test file",
+      "fingerprint": "sha256:300070576a333842a26b36d442b1ea37e67d97c78b3452c1c7882a376a7c5882",
+      "id": "3000"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "internal/scanner/scanner_walk.go",
-      "summary": "internal/scanner/scanner_walk.go has no test file"
+      "summary": "internal/scanner/scanner_walk.go has no test file",
+      "fingerprint": "sha256:113ca24a66b8c3b76bab26a7106c028010cf40dd53cc54afa8d611fd368f4ade",
+      "id": "113c"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers.go",
-      "summary": "tools/handlers.go has no test file"
+      "summary": "tools/handlers.go has no test file",
+      "fingerprint": "sha256:e8c8cbe82d39a376aee4423d84701832c37088eeffab92e8ad94612b4dc3ce3a",
+      "id": "e8c8"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_dataflow.go",
-      "summary": "tools/handlers_dataflow.go has no test file"
+      "summary": "tools/handlers_dataflow.go has no test file",
+      "fingerprint": "sha256:deef67d80d40cd2bfe54bfa1a0f8aa1d66f7b5e5969f2901fb7696fc34167d27",
+      "id": "deef"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_deps.go",
-      "summary": "tools/handlers_deps.go has no test file"
+      "summary": "tools/handlers_deps.go has no test file",
+      "fingerprint": "sha256:d3290dce62fc3dab43c9477c01cf6cb38ee6de9667a8fdb19392503ee05f9637",
+      "id": "d329"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_drift.go",
-      "summary": "tools/handlers_drift.go has no test file"
+      "summary": "tools/handlers_drift.go has no test file",
+      "fingerprint": "sha256:13c94502fb7f83c92ddcc082501d3e1ad46e23b0b7814320f46c2a605973d6f8",
+      "id": "13c9"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_meta.go",
-      "summary": "tools/handlers_meta.go has no test file"
+      "summary": "tools/handlers_meta.go has no test file",
+      "fingerprint": "sha256:3f17928f12ceafd6d012f3eb514b0bdb1cea6b25a17e734dff5798c14eeb5888",
+      "id": "3f17"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_registry.go",
-      "summary": "tools/handlers_registry.go has no test file"
+      "summary": "tools/handlers_registry.go has no test file",
+      "fingerprint": "sha256:220fd1c51ad3af205c3cda27545a264ac99aceba1d6774782218e9a0cb345238",
+      "id": "220f"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_render.go",
-      "summary": "tools/handlers_render.go has no test file"
+      "summary": "tools/handlers_render.go has no test file",
+      "fingerprint": "sha256:6f51a8431b7629321f4bb95bcefddfa71637f139f8d46763099287f73ab861e2",
+      "id": "6f51"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tools/handlers_validate.go",
-      "summary": "tools/handlers_validate.go has no test file"
+      "summary": "tools/handlers_validate.go has no test file",
+      "fingerprint": "sha256:82a21954c4926b5945bb0c370008067062b3cd75ca73ea4bccb9a22f3c46d6cf",
+      "id": "82a2"
     },
     {
       "detector": "test_coverage",
       "severity": "warning",
       "key": "tracing/tracing.go",
-      "summary": "tracing/tracing.go has no test file"
+      "summary": "tracing/tracing.go has no test file",
+      "fingerprint": "sha256:ac047149f64302ddb618341888fa58214a1f32cb65fc485bdcaf518280d512cc",
+      "id": "ac04"
     }
   ]
 }
