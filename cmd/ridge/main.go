@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/olgasafonova/mcp-cache-go/mcpcache"
 	"github.com/olgasafonova/ridge/internal/safepath"
 	"github.com/olgasafonova/ridge/tools"
 	"github.com/olgasafonova/ridge/tracing"
@@ -73,9 +75,32 @@ func setupTracing(logger *slog.Logger) func() {
 	return func() { _ = shutdown(context.Background()) }
 }
 
+// toolListTTL is how long a client may cache this server's tool list.
+//
+// The tool set is fixed at compile time and changes only when a release ships, so
+// an hour is conservative. Without this the SDK advertises ttlMs:0, which the MCP
+// 2026-07-28 spec defines as immediately stale, so a compliant client re-fetches
+// the list every turn.
+const toolListTTL = time.Hour
+
+// cacheConfig is the cache-hint policy for this server.
+//
+// Only the list-shaped methods are stamped. Default stays zero on purpose: a
+// blanket default would also cover resources/read, which returns live content.
+// This server registers no resources or prompts today, so naming the methods
+// explicitly keeps that true if it ever does.
+func cacheConfig() mcpcache.Config {
+	return mcpcache.Config{
+		TTLs: map[string]time.Duration{
+			mcpcache.MethodListTools: toolListTTL,
+			mcpcache.MethodDiscover:  toolListTTL,
+		},
+	}
+}
+
 // newServer creates the MCP server with capabilities and instructions.
 func newServer(logger *slog.Logger) *mcp.Server {
-	return mcp.NewServer(&mcp.Implementation{
+	server := mcp.NewServer(&mcp.Implementation{
 		Name:    ServerName,
 		Version: ServerVersion,
 	}, &mcp.ServerOptions{
@@ -86,6 +111,12 @@ func newServer(logger *slog.Logger) *mcp.Server {
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
 		Instructions: serverInstructions,
 	})
+
+	// Advertise a cache TTL on list results. The SDK leaves ttlMs at 0, so without
+	// this a compliant client treats every tools/list as stale.
+	server.AddReceivingMiddleware(mcpcache.Middleware(cacheConfig()))
+
+	return server
 }
 
 // run serves stdio traffic until a SIGINT/SIGTERM arrives or the transport
