@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/olgasafonova/mcp-cache-go v0.1.0
 	github.com/smacker/go-tree-sitter v0.0.0-20240827094217-dd81d9e9be82
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
@@ -22,7 +23,6 @@ require (
 	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
-	github.com/olgasafonova/mcp-cache-go v0.1.0 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
