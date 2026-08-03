@@ -36,9 +36,8 @@ For a single service or subdirectory, use arch_focus instead.
 Pass paths (array of strings) instead of path to scan multiple directories and merge into a single graph — each node carries a source field recording which scan root produced it. Use this for cross-substrate analysis (code + docs + vault in one graph). paths and path/repo are mutually exclusive; passing both returns a validation error.
 WHY: Parses Go with go/ast, TypeScript / Python / Rust / Java with tree-sitter, markdown with link extraction. Detects dependencies from import statements only; dynamic loading, reflection, or runtime service discovery is invisible.
 FAILS WHEN: directory path doesn't exist (check path and retry), directory contains no supported files (Go, TypeScript, Python, Rust, Java, or markdown).`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_focus",
@@ -48,9 +47,8 @@ FAILS WHEN: directory path doesn't exist (check path and retry), directory conta
 USE WHEN the user wants to zoom into one service or module, not the entire project.
 Pass a subdirectory path; returns the same format as arch_scan scoped to that subtree.
 FAILS WHEN: subdirectory path doesn't exist (check path), no supported files in that subtree (Go, TypeScript, Python, Rust, Java, or markdown).`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_generate",
@@ -66,9 +64,8 @@ Optional theme_bg and theme_fg hex colors (e.g. "#ffffff", "#1e293b") derive a f
 Set prune_threshold (0.0-1.0) to remove ubiquitous nodes like logging or fmt that clutter diagrams. A value of 0.5 removes nodes targeted by more than 50% of source nodes.
 Set min_degree (integer >= 1) to drop nodes whose total in+out degree is below the threshold — useful for knowledge graphs / Obsidian vaults where Mermaid's hierarchical layout breaks down past ~50 nodes. min_degree=5 typically reduces a 300-note vault to its hubs.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), invalid format name (valid: mermaid, plantuml, c4, structurizr, drawio, excalidraw, json, html, forcegraph).`,
-		Category:   "diagram",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "diagram",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_dependencies",
@@ -79,9 +76,8 @@ USE WHEN the user asks about what depends on what, import graphs, or external se
 Returns categorized dependency lists with import paths and detected infrastructure.
 WHY: Detects dependencies from static import analysis only. Runtime dependencies, reflection-based injection, or dynamically loaded plugins are not captured.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_blast_radius",
@@ -95,9 +91,8 @@ Returns dependents grouped by depth: depth 1 is direct importers, depth 2 import
 Default max_depth is 50; lower for shorter output, raise for very deep import graphs.
 WHY: Walks resolved import edges in reverse. Suffix matching makes targets like "internal/scanner" work even when node IDs are prefixed.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), target string matches no node (run arch_scan to see available IDs and paths).`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_dataflow",
@@ -110,9 +105,8 @@ Identifies HTTP endpoints, message producers/consumers, and data stores.
 Returns structured process traces: entry-to-terminal chains with confidence scores and edge types, grouped by entry point. Each trace shows the full path from an endpoint through intermediate packages to a terminal node (database, queue, cache, or external API).
 WHY: Detects endpoints from stdlib patterns (net/http, Express, Flask/FastAPI). Custom frameworks or code-generated routes may not be detected.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first). Returns empty data paths if the codebase has no HTTP handlers, message producers, or data stores.`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_boundaries",
@@ -125,9 +119,8 @@ Detects boundaries from go.mod/package.json, cmd/ directories, Dockerfiles, and 
 Returns "signals" (marker counts, workspace/orchestration flags, and deployable-unit count behind the verdict), "graph_signals" (scan-derived: cross-boundary edge count and shared-database node IDs), "reason" (which rule fired), and "ambiguous" (true when the topology is a borderline/fallback call) so the classification can be verified, not just trusted.
 WHY: Infers boundaries from conventional markers. Projects without go.mod, package.json, Dockerfiles, or k8s manifests produce weaker boundary detection and may report "unknown" topology (flagged ambiguous). "graph_signals" is omitted when the code scan fails; marker evidence still returns.
 FAILS WHEN: the path does not exist or is outside the allowed scan roots.`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_diff",
@@ -139,9 +132,8 @@ For comparing two git refs (branches/tags) instead, use arch_drift.
 Returns a diff report with added/removed/modified components and severity classification.
 WHY: Uses exact node ID matching, not fuzzy. Renamed packages or services appear as separate "removed" and "added" entries, not as "modified."
 FAILS WHEN: no baseline snapshot exists (run arch_snapshot first to create one), snapshot was saved for a different project directory.`,
-		Category:   "drift",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "drift",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_drift",
@@ -154,9 +146,8 @@ For comparing against a saved baseline snapshot, use arch_diff instead.
 Scans both refs and reports differences.
 WHY: Checks out each ref independently, scans both, and diffs the resulting architecture graphs. Works with any valid git ref (branch name, tag, commit SHA).
 FAILS WHEN: directory is not a git repository, specified git ref doesn't exist (check branch/tag names with git branch -a or git tag).`,
-		Category:   "drift",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "drift",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_drift_explain",
@@ -169,9 +160,8 @@ For the structured JSON diff alone, use arch_drift instead.
 Returns both the narrative paragraph and the underlying drift report.
 WHY: Templates the structured diff into prose grouped by node type, change kind, and severity. No LLM call; output is deterministic.
 FAILS WHEN: directory is not a git repository, specified git ref doesn't exist.`,
-		Category:   "drift",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "drift",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_validate",
@@ -196,9 +186,8 @@ USE WHEN the user asks "how has the architecture changed over time?" or wants to
 Samples key commits/tags and shows component counts, new services, removed services.
 For comparing exactly two git refs, use arch_drift instead.
 FAILS WHEN: directory is not a git repository. Produces minimal output if the repo has too few commits or tags to show meaningful evolution.`,
-		Category:   "history",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "history",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_snapshot",
@@ -223,9 +212,8 @@ For rule violations (circular deps, layering), use arch_validate instead.
 Returns per-component coupling and instability scores plus project-wide averages.
 WHY: Instability = Ce/(Ca+Ce). High instability (near 1.0) means a component depends on many others but few depend on it. Low instability (near 0.0) means many components depend on it, making it hard to change safely.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
-		Category:   "validation",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "validation",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_explain",
@@ -236,9 +224,8 @@ USE WHEN the user asks "why is it structured this way?" or "explain the architec
 Uses the scanned graph plus code patterns to provide architectural rationale.
 For actionable improvement suggestions, use arch_recommend instead.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
-		Category:   "analysis",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "analysis",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_recommend",
@@ -250,9 +237,8 @@ Combines validation, metrics, and pattern analysis to produce actionable recomme
 Each recommendation carries "evidence" (the triggering metric readings — value + threshold + node, e.g. instability 0.82 vs 0.70) and a "confidence" grade (high/medium/low), so a caller can verify why it fired instead of trusting the prose rationale.
 For just violations, use arch_validate. For just metrics, use arch_metrics.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first).`,
-		Category:   "validation",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "validation",
+		ReadOnly: true,
 	},
 	{
 		Name:   "arch_registry_add",
@@ -283,8 +269,7 @@ FAILS WHEN: alias not found in registry.`,
 USE WHEN the user asks "what repos are registered?" or wants to see available aliases.
 Entries whose paths no longer exist on disk are marked stale.
 Returns an empty list if no repos are registered.`,
-		Category:   "registry",
-		ReadOnly:   true,
-		Idempotent: true,
+		Category: "registry",
+		ReadOnly: true,
 	},
 }
