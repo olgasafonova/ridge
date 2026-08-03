@@ -20,13 +20,13 @@ import (
 // =============================================================================
 
 type ArchValidateArgs struct {
-	Path string `json:"path"`
-	Repo string `json:"repo,omitempty"`
+	Path string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	// Baseline selects the known-violations ratchet mode: "" (off),
 	// "write" (save current violations as the accepted baseline), or
 	// "check" (fail only on violations not in the baseline).
-	Baseline     string `json:"baseline,omitempty"`
-	BaselineFile string `json:"baseline_file,omitempty"`
+	Baseline     string `json:"baseline,omitempty" jsonschema:"Known-violations ratchet mode: omit to report every violation, write to record the current violations as the accepted baseline, or check to fail only on violations absent from that baseline."`
+	BaselineFile string `json:"baseline_file,omitempty" jsonschema:"Path to the baseline file that the baseline mode reads or writes. Defaults to a conventional path in the codebase when omitted."`
 	ScanControl
 }
 
@@ -150,9 +150,9 @@ func checkValidateBaseline(file string, detected []detector.Violation) (*ArchVal
 // =============================================================================
 
 type ArchHistoryArgs struct {
-	Path  string `json:"path"`
-	Repo  string `json:"repo,omitempty"`
-	Limit int    `json:"limit,omitempty"`
+	Path  string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo  string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	Limit int    `json:"limit,omitempty" jsonschema:"Maximum number of history entries to return, most recent first. Unset returns all recorded entries."`
 }
 
 type ArchHistoryResult struct {

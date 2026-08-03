@@ -15,8 +15,8 @@ import (
 // =============================================================================
 
 type ArchDataflowArgs struct {
-	Path string `json:"path"`
-	Repo string `json:"repo,omitempty"`
+	Path string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	ScanControl
 }
 
@@ -80,8 +80,8 @@ func collectDataPaths(graph *model.ArchGraph) []string {
 // =============================================================================
 
 type ArchBoundariesArgs struct {
-	Path string `json:"path"`
-	Repo string `json:"repo,omitempty"`
+	Path string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	ScanControl
 }
 

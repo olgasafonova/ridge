@@ -111,13 +111,13 @@ func (h *HandlerRegistry) scanPath(ctx context.Context, path, alias string, sc S
 
 // ArchScanArgs are the arguments for arch_scan.
 type ArchScanArgs struct {
-	Path           string   `json:"path"`
-	Paths          []string `json:"paths,omitempty"`
-	Repo           string   `json:"repo,omitempty"`
-	Detail         string   `json:"detail,omitempty"`           // "summary" (default) or "full"
-	Samples        bool     `json:"samples,omitempty"`          // when true, populate Node.Source with N source lines for file-backed nodes
-	SampleLines    int      `json:"sample_lines,omitempty"`     // lines per sample (default 6); requires samples=true
-	MaxDetailNodes int      `json:"max_detail_nodes,omitempty"` // cap on nodes/edges emitted when detail="full" (default 1000); results past the cap set truncated=true
+	Path           string   `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Paths          []string `json:"paths,omitempty" jsonschema:"Scan several codebase roots in one call and merge them into a single graph. Use instead of path for a multi-repo or monorepo view."`
+	Repo           string   `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	Detail         string   `json:"detail,omitempty" jsonschema:"Response depth: summary (counts and topology only; the default) or full (also emits the node and edge lists)."`             // "summary" (default) or "full"
+	Samples        bool     `json:"samples,omitempty" jsonschema:"Include a short source excerpt on each file-backed node, so the graph can be read without opening files. Off by default."` // when true, populate Node.Source with N source lines for file-backed nodes
+	SampleLines    int      `json:"sample_lines,omitempty" jsonschema:"Lines of source to include per sample. Defaults to 6. Has no effect unless samples is true."`                         // lines per sample (default 6); requires samples=true
+	MaxDetailNodes int      `json:"max_detail_nodes,omitempty" jsonschema:"Cap on nodes and edges emitted when detail is full. Defaults to 1000; exceeding it marks the result truncated."`  // cap on nodes/edges emitted when detail="full" (default 1000); results past the cap set truncated=true
 	ScanControl
 }
 
@@ -300,8 +300,8 @@ func clipFullDetail(res *ArchScanResult, limit int) {
 
 // ArchFocusArgs are the arguments for arch_focus.
 type ArchFocusArgs struct {
-	Path string `json:"path"`
-	Repo string `json:"repo,omitempty"`
+	Path string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	ScanControl
 }
 
