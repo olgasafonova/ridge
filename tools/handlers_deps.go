@@ -18,8 +18,8 @@ import (
 
 // ArchDependenciesArgs are the arguments for arch_dependencies.
 type ArchDependenciesArgs struct {
-	Path string `json:"path"`
-	Repo string `json:"repo,omitempty"`
+	Path string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	ScanControl
 }
 
@@ -133,10 +133,10 @@ func ensureSlice(s []string) []string {
 
 // ArchBlastRadiusArgs are the arguments for arch_blast_radius.
 type ArchBlastRadiusArgs struct {
-	Path     string `json:"path"`
-	Repo     string `json:"repo,omitempty"`
-	Target   string `json:"target"`
-	MaxDepth int    `json:"max_depth,omitempty"`
+	Path     string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo     string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	Target   string `json:"target" jsonschema:"Node to compute the blast radius for. Accepts a full node ID or a trailing fragment of an ID or file path; the shortest match wins. Run arch_scan first to list available node IDs."`
+	MaxDepth int    `json:"max_depth,omitempty" jsonschema:"Stop walking dependents after this many hops. The result reports whether the limit was hit. Unset walks the full transitive set."`
 	ScanControl
 }
 

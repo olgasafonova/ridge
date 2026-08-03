@@ -99,12 +99,12 @@ func (h *HandlerRegistry) RegisteredTools() []ToolSpec {
 
 // ScanControl contains optional fields to control scan behavior.
 type ScanControl struct {
-	MaxFiles    int      `json:"max_files,omitempty"`
-	MaxNodes    int      `json:"max_nodes,omitempty"`
-	TimeoutSecs int      `json:"timeout_secs,omitempty"`
-	SkipDirs    []string `json:"skip_dirs,omitempty"`
-	SkipGlobs   []string `json:"skip_globs,omitempty"`
-	Workers     int      `json:"workers,omitempty"`
+	MaxFiles    int      `json:"max_files,omitempty" jsonschema:"Stop analyzing after this many files. Use on a large repo to bound scan time; the result is marked truncated when a limit is hit. Unset means no limit."`
+	MaxNodes    int      `json:"max_nodes,omitempty" jsonschema:"Stop adding nodes to the graph after this many. Bounds output size on a large repo; the result is marked truncated when a limit is hit. Unset means no limit."`
+	TimeoutSecs int      `json:"timeout_secs,omitempty" jsonschema:"Abort the scan after this many seconds. Defaults to 120 when unset."`
+	SkipDirs    []string `json:"skip_dirs,omitempty" jsonschema:"Directory names to skip, matched against each path segment (e.g. vendor, node_modules, testdata)."`
+	SkipGlobs   []string `json:"skip_globs,omitempty" jsonschema:"Glob patterns matched against file paths; matching files are skipped (e.g. **/*_test.go, **/generated/**)."`
+	Workers     int      `json:"workers,omitempty" jsonschema:"Number of parallel analyzer workers. Capped at 32. Unset lets the scanner choose."`
 }
 
 func (sc ScanControl) toScanOptions() scanner.ScanOptions {

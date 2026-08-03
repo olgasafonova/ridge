@@ -15,16 +15,16 @@ import (
 
 // ArchGenerateArgs are the arguments for arch_generate.
 type ArchGenerateArgs struct {
-	Path           string  `json:"path"`
-	Repo           string  `json:"repo,omitempty"`
-	Format         string  `json:"format,omitempty"`
-	ViewLevel      string  `json:"view_level,omitempty"`
-	Title          string  `json:"title,omitempty"`
-	Direction      string  `json:"direction,omitempty"`
-	ThemeBG        string  `json:"theme_bg,omitempty"`
-	ThemeFG        string  `json:"theme_fg,omitempty"`
-	PruneThreshold float64 `json:"prune_threshold,omitempty"`
-	MinDegree      int     `json:"min_degree,omitempty"`
+	Path           string  `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo           string  `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	Format         string  `json:"format,omitempty" jsonschema:"Diagram output format: mermaid (default), plantuml, c4, structurizr, json, drawio, excalidraw, html, or forcegraph."`
+	ViewLevel      string  `json:"view_level,omitempty" jsonschema:"Abstraction level: system (service overview), container (services, databases and queues; the default), or component (internal packages and modules). HTML output defaults to component instead, because container renders near-empty for Go MCP servers."`
+	Title          string  `json:"title,omitempty" jsonschema:"Title rendered on the diagram. Defaults to a generated title when omitted."`
+	Direction      string  `json:"direction,omitempty" jsonschema:"Layout direction, in Mermaid terms: TB (top to bottom, the default), LR, RL, or BT. Only mermaid and plantuml honour it."`
+	ThemeBG        string  `json:"theme_bg,omitempty" jsonschema:"Background colour for the rendered diagram, as a CSS colour (e.g. #0d1117)."`
+	ThemeFG        string  `json:"theme_fg,omitempty" jsonschema:"Foreground and text colour for the rendered diagram, as a CSS colour (e.g. #e6edf3)."`
+	PruneThreshold float64 `json:"prune_threshold,omitempty" jsonschema:"Drop nodes whose relative importance falls below this fraction (0 to 1), to thin a dense diagram. Pruned node names are listed in the result. Unset disables pruning."`
+	MinDegree      int     `json:"min_degree,omitempty" jsonschema:"Drop nodes with fewer than this many connected edges. Useful for hiding leaf nodes on a large graph; the result notes when this emptied the diagram. Unset disables the filter."`
 	ScanControl
 }
 

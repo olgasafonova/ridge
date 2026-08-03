@@ -16,10 +16,10 @@ import (
 // =============================================================================
 
 type ArchSnapshotArgs struct {
-	Path       string `json:"path"`
-	Repo       string `json:"repo,omitempty"`
-	OutputFile string `json:"output_file,omitempty"`
-	Label      string `json:"label,omitempty"`
+	Path       string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo       string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	OutputFile string `json:"output_file,omitempty" jsonschema:"Path to write the snapshot JSON to. Pass the same path to arch_diff later to detect drift. Defaults to a generated filename when omitted."`
+	Label      string `json:"label,omitempty" jsonschema:"Human-readable name recorded in the snapshot, such as a release or milestone (e.g. v2.0-baseline)."`
 	ScanControl
 }
 
@@ -70,8 +70,8 @@ func (h *HandlerRegistry) archSnapshot(ctx context.Context, args ArchSnapshotArg
 // =============================================================================
 
 type ArchMetricsArgs struct {
-	Path string `json:"path"`
-	Repo string `json:"repo,omitempty"`
+	Path string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	ScanControl
 }
 
@@ -108,9 +108,9 @@ func (h *HandlerRegistry) archMetrics(ctx context.Context, args ArchMetricsArgs)
 // =============================================================================
 
 type ArchExplainArgs struct {
-	Path     string `json:"path"`
-	Repo     string `json:"repo,omitempty"`
-	Question string `json:"question,omitempty"`
+	Path     string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo     string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	Question string `json:"question,omitempty" jsonschema:"Specific question to answer about the architecture (e.g. why is the API layer coupled to storage). Omit for a general structural overview."`
 	ScanControl
 }
 
@@ -160,9 +160,9 @@ func (h *HandlerRegistry) archExplain(ctx context.Context, args ArchExplainArgs)
 // =============================================================================
 
 type ArchRecommendArgs struct {
-	Path  string `json:"path"`
-	Repo  string `json:"repo,omitempty"`
-	Focus string `json:"focus,omitempty"` // filter by recommendation category
+	Path  string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo  string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	Focus string `json:"focus,omitempty" jsonschema:"Return only recommendations in this category, matched exactly against a recommendation's category field. Omit to return all categories."`
 	ScanControl
 }
 

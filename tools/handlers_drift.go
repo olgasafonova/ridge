@@ -16,9 +16,9 @@ import (
 // =============================================================================
 
 type ArchDiffArgs struct {
-	Path         string `json:"path"`
-	Repo         string `json:"repo,omitempty"`
-	SnapshotFile string `json:"snapshot_file"`
+	Path         string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo         string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	SnapshotFile string `json:"snapshot_file" jsonschema:"Path to a snapshot JSON file previously written by arch_snapshot, used as the baseline to diff the current codebase against."`
 }
 
 func (h *HandlerRegistry) archDiff(ctx context.Context, args ArchDiffArgs) (*model.DiffReport, error) {
@@ -60,10 +60,10 @@ func (h *HandlerRegistry) archDiff(ctx context.Context, args ArchDiffArgs) (*mod
 // =============================================================================
 
 type ArchDriftArgs struct {
-	Path    string `json:"path"`
-	Repo    string `json:"repo,omitempty"`
-	BaseRef string `json:"base_ref"`
-	HeadRef string `json:"head_ref,omitempty"`
+	Path    string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo    string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	BaseRef string `json:"base_ref" jsonschema:"Git ref to treat as the before state (branch, tag, or commit sha). Required. Ridge checks it out into a temporary worktree and scans it."`
+	HeadRef string `json:"head_ref,omitempty" jsonschema:"Git ref to treat as the after state. Defaults to HEAD when omitted."`
 }
 
 func (h *HandlerRegistry) archDrift(ctx context.Context, args ArchDriftArgs) (*model.DiffReport, error) {
@@ -121,10 +121,10 @@ func (h *HandlerRegistry) checkoutAndScan(ctx context.Context, repoPath, ref, ro
 // =============================================================================
 
 type ArchDriftExplainArgs struct {
-	Path    string `json:"path"`
-	Repo    string `json:"repo,omitempty"`
-	BaseRef string `json:"base_ref"`
-	HeadRef string `json:"head_ref,omitempty"`
+	Path    string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
+	Repo    string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
+	BaseRef string `json:"base_ref" jsonschema:"Git ref to treat as the before state (branch, tag, or commit sha). Required. Ridge checks it out into a temporary worktree and scans it."`
+	HeadRef string `json:"head_ref,omitempty" jsonschema:"Git ref to treat as the after state. Defaults to HEAD when omitted."`
 }
 
 type ArchDriftExplainResult struct {
