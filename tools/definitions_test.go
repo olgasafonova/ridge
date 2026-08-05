@@ -86,3 +86,21 @@ func TestToolMethodsAreUnique(t *testing.T) {
 		seen[spec.Method] = true
 	}
 }
+
+// ptr backs the optional OpenWorldHint annotation in register()
+// (handlers.go), where *bool distinguishes "unset" from "false". The
+// contract that matters is that each call returns a pointer to its own
+// copy, so no two annotations alias the same bool.
+func TestPtrReturnsDistinctCopies(t *testing.T) {
+	a, b := ptr(true), ptr(true)
+	if a == nil || *a != true {
+		t.Fatalf("ptr(true) = %v, want pointer to true", a)
+	}
+	if a == b {
+		t.Error("ptr(true) returned the same pointer twice; each call must copy")
+	}
+	*a = false
+	if !*b {
+		t.Error("mutating one ptr result changed another; values must not alias")
+	}
+}
