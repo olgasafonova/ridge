@@ -108,7 +108,7 @@ The description on a `ToolSpec` is the only thing an agent reads before deciding
 
 Codifies: `tools/definitions.go` (every spec), `cmd/ridge/main.go` (`serverInstructions`), commit `f42d46e`.
 
-**Enforcement: partially mechanical.** `TestAllToolDescriptionsHaveUSEWHEN` checks the shape's anchor clause. `TestSchemaPropertiesAreDescribed` (`tools/schema_descriptions_test.go`) opens a real in-memory MCP session and asserts every property of every listed tool's input schema carries a description, deliberately reading what a client actually receives rather than the server-side structs. Nothing checks that a description edit preserved its cross-references, and nothing checks `serverInstructions` at all.
+**Enforcement: partially mechanical.** `TestAllToolDescriptionsHaveUSEWHEN` checks the shape's anchor clause. `TestSchemaPropertiesAreDescribed` (`tools/schema_descriptions_test.go`) opens a real in-memory MCP session and asserts every property of every listed tool's input schema carries a description, deliberately reading what a client actually receives rather than the server-side structs. Nothing checks that a description edit preserved its cross-references. The server instructions, previously unchecked, are derived from the live registries since 27-08-2026 and pinned by `TestServerInstructionsCoverRegistries` (`cmd/ridge/main_test.go`).
 
 ---
 
