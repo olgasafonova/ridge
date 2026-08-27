@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/olgasafonova/ridge/internal/model"
 	"github.com/olgasafonova/ridge/internal/render"
@@ -136,10 +138,23 @@ var renderFuncs = map[render.Format]func(*model.ArchGraph, render.Options) strin
 	render.FormatForceGraph:  render.ForceGraph,
 }
 
+// SupportedFormats returns the sorted names of every format renderFuncs can
+// dispatch to. Used to derive the "Output Formats" section of the server
+// instructions and the unsupported-format error from the live dispatch map
+// instead of a hand-maintained list.
+func SupportedFormats() []string {
+	formats := make([]string, 0, len(renderFuncs))
+	for format := range renderFuncs {
+		formats = append(formats, string(format))
+	}
+	slices.Sort(formats)
+	return formats
+}
+
 func dispatchRenderer(graph *model.ArchGraph, opts render.Options) (string, error) {
 	fn, ok := renderFuncs[opts.Format]
 	if !ok {
-		return "", fmt.Errorf("unsupported format: %s (supported: mermaid, plantuml, c4, structurizr, json, drawio, excalidraw, html, forcegraph)", opts.Format)
+		return "", fmt.Errorf("unsupported format: %s (supported: %s)", opts.Format, strings.Join(SupportedFormats(), ", "))
 	}
 	return fn(graph, opts), nil
 }

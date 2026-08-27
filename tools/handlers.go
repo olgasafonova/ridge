@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -26,15 +27,38 @@ type HandlerRegistry struct {
 	logger       *slog.Logger
 }
 
+// defaultAnalyzers constructs the full set of language analyzers this server
+// registers. It is the single source of truth for the supported substrates:
+// NewHandlerRegistry wires these into the scanner, and SupportedLanguages
+// derives the language list advertised in the server instructions from the
+// same set, so the two cannot drift.
+func defaultAnalyzers() []scanner.Analyzer {
+	return []scanner.Analyzer{
+		golang.New(),
+		typescript.New(),
+		python.New(),
+		markdown.New(),
+		rust.New(),
+		java.New(),
+	}
+}
+
+// SupportedLanguages returns the sorted language names of every registered
+// analyzer. Used to derive the "Supported Languages" section of the server
+// instructions from the live analyzer set instead of a hand-maintained list.
+func SupportedLanguages() []string {
+	analyzers := defaultAnalyzers()
+	languages := make([]string, 0, len(analyzers))
+	for _, a := range analyzers {
+		languages = append(languages, a.Language())
+	}
+	slices.Sort(languages)
+	return languages
+}
+
 // NewHandlerRegistry creates a registry with all dependencies wired.
 func NewHandlerRegistry(logger *slog.Logger) *HandlerRegistry {
-	goAnalyzer := golang.New()
-	tsAnalyzer := typescript.New()
-	pyAnalyzer := python.New()
-	mdAnalyzer := markdown.New()
-	rustAnalyzer := rust.New()
-	javaAnalyzer := java.New()
-	s := scanner.New(logger, goAnalyzer, tsAnalyzer, pyAnalyzer, mdAnalyzer, rustAnalyzer, javaAnalyzer)
+	s := scanner.New(logger, defaultAnalyzers()...)
 
 	reg, err := registry.Load()
 	if err != nil {

@@ -5,10 +5,12 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -109,7 +111,7 @@ func newServer(logger *slog.Logger) *mcp.Server {
 		// Without this, AddTool triggers a notification before the client completes
 		// the initialize handshake, causing intermittent connection failures.
 		Capabilities: &mcp.ServerCapabilities{Tools: &mcp.ToolCapabilities{}},
-		Instructions: serverInstructions,
+		Instructions: buildServerInstructions(),
 	})
 
 	// Advertise a cache TTL on list results. The SDK leaves ttlMs at 0, so without
@@ -145,7 +147,21 @@ func run(server *mcp.Server, logger *slog.Logger) {
 	logger.Info("Shutdown complete")
 }
 
-const serverInstructions = `Code to Arch MCP - Codebase Architecture Analysis
+// buildServerInstructions renders the server instructions with the language
+// and format lists derived from the live registries (the analyzers wired into
+// tools.NewHandlerRegistry and the renderFuncs dispatch map), so the
+// instructions cannot drift when a substrate or format is added.
+// TestServerInstructionsCoverRegistries pins the wiring.
+func buildServerInstructions() string {
+	return fmt.Sprintf(serverInstructionsTemplate,
+		strings.Join(tools.SupportedLanguages(), ", "),
+		strings.Join(tools.SupportedFormats(), ", "),
+	)
+}
+
+// serverInstructionsTemplate is the prose around the derived lists. The first
+// %s is the supported languages, the second the output formats.
+const serverInstructionsTemplate = `Code to Arch MCP - Codebase Architecture Analysis
 
 ## Getting Started
 
@@ -177,7 +193,7 @@ Once registered, use repo="alias" instead of path in any tool.
 
 ### Generate diagram:
 "Create a Mermaid diagram of this project"
--> USE: arch_generate (outputs Mermaid, PlantUML, C4, Structurizr, draw.io, Excalidraw, JSON)
+-> USE: arch_generate (renders any of the Output Formats listed below)
 
 ### Dependencies:
 "What does this service depend on?"
@@ -221,8 +237,8 @@ Once registered, use repo="alias" instead of path in any tool.
 
 ## Supported Languages
 
-Go (go/ast), TypeScript (tree-sitter), Python (tree-sitter)
+%s
 
 ## Output Formats
 
-mermaid, plantuml, c4, structurizr, drawio, excalidraw, json`
+%s`

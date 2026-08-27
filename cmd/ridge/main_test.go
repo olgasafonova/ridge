@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -70,5 +71,42 @@ func TestToolsListAdvertisesCacheTTL(t *testing.T) {
 	// a wrong scope on a cached result is a cross-user leak, not a performance nit.
 	if got := res.GetCacheScope(); got != "public" {
 		t.Errorf("tools/list cacheScope = %q, want %q", got, "public")
+	}
+}
+
+// TestServerInstructionsCoverRegistries pins the server instructions to the
+// live registries. The language and format lists are derived from
+// tools.SupportedLanguages (the analyzers wired into NewHandlerRegistry) and
+// tools.SupportedFormats (the renderFuncs dispatch map), so this test fails
+// if the template wiring breaks or a registry stops feeding the instructions:
+// adding a substrate or format without the instructions knowing is impossible
+// while this passes.
+func TestServerInstructionsCoverRegistries(t *testing.T) {
+	instructions := buildServerInstructions()
+
+	languages := tools.SupportedLanguages()
+	if len(languages) == 0 {
+		t.Fatal("tools.SupportedLanguages() returned no languages; the analyzer registry is empty")
+	}
+	for _, lang := range languages {
+		if !strings.Contains(instructions, lang) {
+			t.Errorf("server instructions missing supported language %q", lang)
+		}
+	}
+
+	formats := tools.SupportedFormats()
+	if len(formats) == 0 {
+		t.Fatal("tools.SupportedFormats() returned no formats; the render dispatch map is empty")
+	}
+	for _, format := range formats {
+		if !strings.Contains(instructions, format) {
+			t.Errorf("server instructions missing output format %q", format)
+		}
+	}
+
+	// A placeholder-count mismatch between the template and buildServerInstructions
+	// would surface as a fmt error marker in the rendered text.
+	if strings.Contains(instructions, "%!") {
+		t.Errorf("server instructions contain an unrendered fmt placeholder:\n%s", instructions)
 	}
 }
