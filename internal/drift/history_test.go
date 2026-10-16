@@ -22,6 +22,14 @@ func initHistoryRepo(t *testing.T, count int) string {
 			"GIT_AUTHOR_EMAIL=test@test.com",
 			"GIT_COMMITTER_NAME=test",
 			"GIT_COMMITTER_EMAIL=test@test.com",
+			// Disable auto-gc and auto-maintenance: commit can spawn them as
+			// detached processes that keep writing into .git after the test
+			// returns, failing t.TempDir cleanup with "directory not empty".
+			"GIT_CONFIG_COUNT=2",
+			"GIT_CONFIG_KEY_0=gc.auto",
+			"GIT_CONFIG_VALUE_0=0",
+			"GIT_CONFIG_KEY_1=maintenance.auto",
+			"GIT_CONFIG_VALUE_1=false",
 		)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
