@@ -197,6 +197,8 @@ Analyzers recognize common infrastructure packages and classify them automatical
 | HTML | Self-contained page with the Mermaid runtime embedded inline (~900 KB output, no network requests) |
 | forcegraph | Self-contained D3-driven force-directed page (~290 KB) with drag, zoom, pan; color = connected component; node size scales with degree. Use for hub-spoke graphs (knowledge vaults, dense dependency networks) where Mermaid's hierarchical layout produces a long horizontal stripe. Pair with `min_degree=10` to keep only hubs |
 
+`arch_generate` caps the diagram at 100,000 characters by default. A longer one comes back cut, with `truncated: true`, `total_chars` set to the full length, and a note naming the `max_chars` value that returns it whole. HTML and forcegraph are larger than the default, so pass `max_chars=1000000` for those.
+
 ## Setup
 
 ### Prerequisites

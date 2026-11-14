@@ -21,7 +21,7 @@ bd sync               # Sync with git
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **PUSH TO REMOTE** - This is MANDATORY. The git-tracked `.beads/issues.jsonl` is the record; do not run `bd dolt push`, which leaves a stale `refs/dolt/data` on origin that later `bd init` bootstraps from:
    ```bash
    git pull --rebase
    bd sync
@@ -68,10 +68,12 @@ bd close <id>         # Complete work
 1. **File issues for remaining work** - Create issues for anything that needs follow-up
 2. **Run quality gates** (if code changed) - Tests, linters, builds
 3. **Update issue status** - Close finished work, update in-progress items
-4. **PUSH TO REMOTE** - This is MANDATORY:
+4. **PUSH TO REMOTE** - This is MANDATORY. The git-tracked `.beads/issues.jsonl` is the record; do not run `bd dolt push`, which leaves a stale `refs/dolt/data` on origin that later `bd init` bootstraps from:
    ```bash
    git pull --rebase
-   bd dolt push
+   bd export > .beads/issues.jsonl
+   git add .beads/issues.jsonl <changed files>   # explicit paths, never -A
+   git commit
    git push
    git status  # MUST show "up to date with origin"
    ```
