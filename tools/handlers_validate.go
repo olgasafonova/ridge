@@ -13,6 +13,7 @@ import (
 	"github.com/olgasafonova/ridge/internal/drift"
 	"github.com/olgasafonova/ridge/internal/model"
 	"github.com/olgasafonova/ridge/internal/safepath"
+	"github.com/olgasafonova/ridge/internal/scanner"
 )
 
 // =============================================================================
@@ -152,7 +153,8 @@ func checkValidateBaseline(file string, detected []detector.Violation) (*ArchVal
 type ArchHistoryArgs struct {
 	Path  string `json:"path" jsonschema:"Absolute filesystem path to the codebase to analyze. Supply either path or repo; path takes precedence when both are set."`
 	Repo  string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
-	Limit int    `json:"limit,omitempty" jsonschema:"Maximum number of history entries to return, most recent first. Unset returns all recorded entries."`
+	Limit int    `json:"limit,omitempty" jsonschema:"Number of commits to analyze, most recent first. Defaults to 10 when unset; capped at 20."`
+	ScanControl
 }
 
 type ArchHistoryResult struct {
@@ -184,7 +186,7 @@ func (h *HandlerRegistry) archHistory(ctx context.Context, args ArchHistoryArgs)
 		return nil, fmt.Errorf("getting git history: %w", err)
 	}
 
-	results, err := h.scanCommitsParallel(ctx, path, commits)
+	results, err := h.scanCommitsParallel(ctx, path, commits, args.toScanOptions())
 	if err != nil {
 		return nil, err
 	}
@@ -205,8 +207,9 @@ func (h *HandlerRegistry) archHistory(ctx context.Context, args ArchHistoryArgs)
 // scanCommitsParallel checks out each commit in its own worktree and scans it,
 // up to 4 concurrently. Each goroutine writes to its own slot, so no locking
 // is needed. Per-commit scan failures are non-fatal: the entry survives with
-// zero counts.
-func (h *HandlerRegistry) scanCommitsParallel(ctx context.Context, path string, commits []drift.GitLogEntry) ([]scanResult, error) {
+// zero counts. opts applies to every commit's scan, so the entries stay
+// comparable with each other.
+func (h *HandlerRegistry) scanCommitsParallel(ctx context.Context, path string, commits []drift.GitLogEntry, opts scanner.ScanOptions) ([]scanResult, error) {
 	results := make([]scanResult, len(commits))
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(4)
@@ -218,7 +221,7 @@ func (h *HandlerRegistry) scanCommitsParallel(ctx context.Context, path string, 
 			Message: c.Message,
 		}
 		g.Go(func() error {
-			h.scanCommitInto(gctx, path, c.Hash, &results[idx])
+			h.scanCommitInto(gctx, commitScan{repoPath: path, hash: c.Hash, opts: opts}, &results[idx])
 			return nil
 		})
 	}
@@ -228,19 +231,27 @@ func (h *HandlerRegistry) scanCommitsParallel(ctx context.Context, path string, 
 	return results, nil
 }
 
+// commitScan names one commit of a repo and the options to scan it with.
+type commitScan struct {
+	repoPath string
+	hash     string
+	opts     scanner.ScanOptions
+}
+
 // scanCommitInto checks out a single commit and populates the result's graph
 // and entry counts. Errors are silently swallowed so one bad commit doesn't
 // abort the whole history scan.
-func (h *HandlerRegistry) scanCommitInto(ctx context.Context, path, hash string, r *scanResult) {
-	worktree, cleanup, wErr := drift.CheckoutRef(ctx, path, hash)
+func (h *HandlerRegistry) scanCommitInto(ctx context.Context, c commitScan, r *scanResult) {
+	worktree, cleanup, wErr := drift.CheckoutRef(ctx, c.repoPath, c.hash)
 	if wErr != nil {
 		return
 	}
 	defer cleanup()
-	graph, scanErr := h.scanner.Scan(worktree)
+	scanned, scanErr := h.scanner.ScanWithOptions(ctx, worktree, c.opts)
 	if scanErr != nil {
 		return
 	}
+	graph := scanned.Graph
 	r.graph = graph
 	r.entry.NodeCount = graph.NodeCount()
 	r.entry.EdgeCount = graph.EdgeCount()
