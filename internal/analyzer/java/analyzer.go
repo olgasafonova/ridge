@@ -48,7 +48,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 
 // javaAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes.
-const javaAnalyzerVersion = "java-v1"
+const javaAnalyzerVersion = "java-v2"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
@@ -59,14 +59,24 @@ func (a *Analyzer) Signature() string {
 // large; the 5 MB ceiling matches the other tree-sitter analyzers.
 const maxFileBytes = 5 * 1024 * 1024
 
-// Analyze parses a Java file and extracts architectural elements.
+// Analyze parses a Java file with no scan root. Module and endpoint IDs fall
+// back to the parent-folder and bare-file-name forms; the scanner uses
+// AnalyzeRooted instead.
 func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
+	return a.AnalyzeRooted("", path)
+}
+
+// AnalyzeRooted parses a Java file and extracts architectural elements. With
+// a scan root, module and endpoint IDs are built from the root-relative path,
+// so every file gets its own nodes.
+func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model.Edge, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
+	file := sourceFile{root: scanRoot, path: path}
 	if info.Size() > maxFileBytes {
-		return []*model.Node{moduleSkippedForSize(path, info.Size())}, nil, nil
+		return []*model.Node{moduleSkippedForSize(file, info)}, nil, nil
 	}
 
 	src, err := os.ReadFile(path)
@@ -81,13 +91,11 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	dir := filepath.Base(filepath.Dir(path))
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	modID := fmt.Sprintf("mod:%s/%s", dir, base)
+	modID := file.moduleID()
 
 	nodes := []*model.Node{{
 		ID:       modID,
-		Name:     base,
+		Name:     file.moduleName(),
 		Type:     model.NodeModule,
 		Language: "java",
 		Path:     filepath.Dir(path),
@@ -101,7 +109,7 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	rc := routeContext{
 		src:       src,
 		modID:     modID,
-		filePath:  path,
+		file:      file,
 		framework: detectFramework(root, src),
 	}
 
@@ -114,6 +122,43 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	edges = append(edges, callEdges...)
 
 	return nodes, edges, nil
+}
+
+// sourceFile is a Java file and the root of the scan it belongs to.
+type sourceFile struct {
+	root string // absolute scan root; "" when unknown
+	path string
+}
+
+// moduleName is the file name without its extension.
+func (f sourceFile) moduleName() string {
+	return strings.TrimSuffix(filepath.Base(f.path), filepath.Ext(f.path))
+}
+
+// moduleID builds the node ID for the file's module.
+//
+// With a scan root the ID is the root-relative path without its extension
+// ("mod:billing/src/main/java/com/acme/util/Strings"), so every file gets its
+// own node. Without one, or for a file outside the root, it falls back to the
+// parent-folder form ("mod:util/Strings"), which collides for same-named
+// files in same-named folders.
+func (f sourceFile) moduleID() string {
+	if rel, ok := common.RelToRoot(f.root, f.path); ok {
+		return "mod:" + strings.TrimSuffix(rel, filepath.Ext(rel))
+	}
+	return fmt.Sprintf("mod:%s/%s", filepath.Base(filepath.Dir(f.path)), f.moduleName())
+}
+
+// endpointID builds the node ID for an endpoint declared at a node of the
+// file: "endpoint:<root-relative path>:<line>". Without a scan root it falls
+// back to the bare file name, which collides for same-named files in
+// different folders.
+func (f sourceFile) endpointID(at *sitter.Node) string {
+	name := filepath.Base(f.path)
+	if rel, ok := common.RelToRoot(f.root, f.path); ok {
+		name = rel
+	}
+	return fmt.Sprintf("endpoint:%s:%d", name, int(at.StartPoint().Row)+1)
 }
 
 // extractImports walks `import com.foo.Bar;` declarations.
@@ -267,7 +312,7 @@ func detectFramework(root *sitter.Node, src []byte) string {
 type routeContext struct {
 	src       []byte
 	modID     string
-	filePath  string
+	file      sourceFile
 	framework string
 }
 
@@ -287,13 +332,13 @@ func extractRoutes(root *sitter.Node, rc routeContext) ([]*model.Node, []*model.
 			return
 		}
 		line := int(node.StartPoint().Row) + 1
-		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(rc.filePath), line)
+		endpointID := rc.file.endpointID(node)
 		nodes = append(nodes, &model.Node{
 			ID:       endpointID,
 			Name:     fmt.Sprintf("%s %s", method, path),
 			Type:     model.NodeEndpoint,
 			Language: "java",
-			Path:     rc.filePath,
+			Path:     rc.file.path,
 			Properties: map[string]string{
 				"method":    method,
 				"route":     path,
@@ -511,18 +556,16 @@ func matchHTTPClientCall(node *sitter.Node, src []byte) (host, method, rawURL st
 }
 
 // moduleSkippedForSize builds a module node for a Java file past the size cap.
-func moduleSkippedForSize(path string, size int64) *model.Node {
-	dir := filepath.Base(filepath.Dir(path))
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+func moduleSkippedForSize(file sourceFile, info os.FileInfo) *model.Node {
 	return &model.Node{
-		ID:       fmt.Sprintf("mod:%s/%s", dir, base),
-		Name:     base,
+		ID:       file.moduleID(),
+		Name:     file.moduleName(),
 		Type:     model.NodeModule,
 		Language: "java",
-		Path:     filepath.Dir(path),
+		Path:     filepath.Dir(file.path),
 		Properties: map[string]string{
 			"skipped":    "size",
-			"size_bytes": fmt.Sprintf("%d", size),
+			"size_bytes": fmt.Sprintf("%d", info.Size()),
 		},
 	}
 }

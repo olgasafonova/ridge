@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/olgasafonova/ridge/internal/analyzer/common"
 )
 
 // svelteExt is the extension of Svelte component files.
@@ -49,19 +51,7 @@ func moduleID(root, path string) string {
 // relToRoot returns path relative to root with forward slashes. ok is false
 // when root is empty or path is not inside it.
 func relToRoot(root, path string) (string, bool) {
-	if root == "" {
-		return "", false
-	}
-	rel, err := filepath.Rel(root, path)
-	if err != nil || leavesRoot(rel) {
-		return "", false
-	}
-	return filepath.ToSlash(rel), true
-}
-
-// leavesRoot reports whether a relative path climbs out of its base.
-func leavesRoot(rel string) bool {
-	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	return common.RelToRoot(root, path)
 }
 
 // importer identifies the file whose imports are being resolved.
