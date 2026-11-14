@@ -127,7 +127,7 @@ type ScanControl struct {
 	MaxNodes    int      `json:"max_nodes,omitempty" jsonschema:"Stop adding nodes to the graph after this many. Bounds output size on a large repo; the result is marked truncated when a limit is hit. Unset means no limit."`
 	TimeoutSecs int      `json:"timeout_secs,omitempty" jsonschema:"Abort the scan after this many seconds. Defaults to 120 when unset."`
 	SkipDirs    []string `json:"skip_dirs,omitempty" jsonschema:"Directory names to skip, matched against each path segment (e.g. vendor, node_modules, testdata)."`
-	SkipGlobs   []string `json:"skip_globs,omitempty" jsonschema:"Glob patterns matched against file paths; matching files are skipped (e.g. **/*_test.go, **/generated/**)."`
+	SkipGlobs   []string `json:"skip_globs,omitempty" jsonschema:"Glob patterns for files to skip. A pattern without a slash matches the file name in any folder (*_test.go). A pattern with a slash matches the path relative to the scan root, where ** stands for any number of folders (**/*.md, **/generated/**, docs/*.md)."`
 	Workers     int      `json:"workers,omitempty" jsonschema:"Number of parallel analyzer workers. Capped at 32. Unset lets the scanner choose."`
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/olgasafonova/ridge/internal/analyzer/markdown"
 	"github.com/olgasafonova/ridge/internal/analyzer/python"
 	"github.com/olgasafonova/ridge/internal/analyzer/typescript"
+	"github.com/olgasafonova/ridge/internal/model"
 	"github.com/olgasafonova/ridge/internal/scanner"
 )
 
@@ -295,6 +296,31 @@ var _ *sql.DB
 	}
 	if result.Stats.FilesAnalyzed != 1 {
 		t.Fatalf("expected 1 file analyzed, got %d", result.Stats.FilesAnalyzed)
+	}
+}
+
+// Bead r8e: "**/*.md" has to remove notes at every depth, the root included.
+func TestScanWithOptions_SkipGlobsDoubleStar(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	writeFile(t, dir, "README.md", "# Readme\n")
+	writeFile(t, dir, "docs/guide.md", "# Guide\n")
+	writeFile(t, dir, "docs/notes/deep/idea.md", "# Idea\n")
+
+	s := scanner.New(testLogger(), golang.New(), markdown.New())
+	result, err := s.ScanWithOptions(context.Background(), dir, scanner.ScanOptions{
+		SkipGlobs: []string{"**/*.md"},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Stats.FilesSkipped != 3 || result.Stats.FilesAnalyzed != 1 {
+		t.Fatalf("skipped %d, analyzed %d; want 3 and 1", result.Stats.FilesSkipped, result.Stats.FilesAnalyzed)
+	}
+	for _, n := range result.Graph.Nodes() {
+		if n.Type == model.NodeNote {
+			t.Fatalf("note %q survived skip_globs **/*.md", n.ID)
+		}
 	}
 }
 

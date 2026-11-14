@@ -270,7 +270,7 @@ All scan tools accept optional parameters for handling large codebases:
 | `timeout_secs` | Cancel scan after N seconds |
 | `workers` | Parallel analysis workers (default: CPU count, max 8) |
 | `skip_dirs` | Additional directories to skip (beyond defaults like `node_modules`, `.git`, `vendor`) |
-| `skip_globs` | File patterns to skip (e.g. `*_test.go`, `*.spec.ts`) |
+| `skip_globs` | File patterns to skip. Without a slash the pattern matches the file name in any folder (`*_test.go`, `*.spec.ts`); with a slash it matches the path from the scan root, and `**` stands for any number of folders (`**/*.md`, `**/generated/**`) |
 
 Partial results include a `truncated: true` flag so you know the graph is incomplete. Sequential tool calls on the same path are cached for 30 seconds.
 

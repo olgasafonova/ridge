@@ -113,17 +113,15 @@ func (s *Scanner) classifyWalkEntry(path string, d fs.DirEntry, p walkParams) (w
 	return walkAccept, ext
 }
 
-// matchesAnyGlob returns true if name or relative path matches any of the patterns.
+// matchesAnyGlob reports whether a file is matched by any skip pattern.
 func matchesAnyGlob(patterns []string, baseName, fullPath, absRoot string) bool {
 	if len(patterns) == 0 {
 		return false
 	}
 	relPath, _ := filepath.Rel(absRoot, fullPath)
+	relPath = filepath.ToSlash(relPath)
 	for _, pattern := range patterns {
-		if matched, _ := filepath.Match(pattern, baseName); matched {
-			return true
-		}
-		if matched, _ := filepath.Match(pattern, relPath); matched {
+		if matchesGlob(pattern, baseName, relPath) {
 			return true
 		}
 	}

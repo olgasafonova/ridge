@@ -20,7 +20,7 @@ type ScanOptions struct {
 	MaxNodes     int           // 0 = unlimited
 	Timeout      time.Duration // 0 = no timeout
 	SkipDirs     []string      // additional dirs to skip (merged with defaults)
-	SkipGlobs    []string      // filepath.Match patterns to skip (e.g. "*_test.go")
+	SkipGlobs    []string      // patterns to skip: "*_test.go" by file name, "**/generated/**" by path (see glob.go)
 	IncludeTests bool          // if true, don't skip test files (default: skip them)
 	Workers      int           // 0 = runtime.NumCPU(), capped at 8
 	State        *ScanState    // non-nil enables incremental scanning (reuse cached results for unchanged files)
