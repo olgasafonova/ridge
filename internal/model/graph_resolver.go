@@ -5,48 +5,64 @@ import (
 	"strings"
 )
 
-// ResolvedEdges returns edges with import:/wikilink:/route: targets rewritten
-// to the concrete node IDs they reference. Unresolvable edges are dropped.
+// ResolvedEdges returns edges with import:/wikilink:/route:/action: targets
+// rewritten to the concrete node IDs they reference. Unresolvable edges are
+// dropped; a form action rendered on several pages yields one edge per page.
 func (g *ArchGraph) ResolvedEdges() []*Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	resolver := newTargetResolver(g.nodes, g.RootPath)
-	routes := newRouteResolver(g.nodes)
+	imports := newTargetResolver(g.nodes, g.RootPath)
+	resolve := edgeResolver{
+		imports: imports,
+		routes:  newRouteResolver(g.nodes),
+		actions: newActionResolver(g.nodes, g.edges, imports),
+	}
 	seen := make(map[string]bool)
 	var result []*Edge
 
 	for _, e := range g.edges {
-		target, ok := routes.resolve(e.Target)
-		if !ok {
-			continue
-		}
-		target, ok = resolver.resolve(target)
-		if !ok {
-			continue
-		}
-		if _, exists := g.nodes[target]; !exists {
-			continue
-		}
-		if e.Source == target {
-			continue
-		}
+		for _, target := range resolve.targets(e) {
+			if _, exists := g.nodes[target]; !exists || e.Source == target {
+				continue
+			}
+			key := e.Source + "|" + target + "|" + string(e.Type)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 
-		key := e.Source + "|" + target + "|" + string(e.Type)
-		if seen[key] {
-			continue
+			result = append(result, &Edge{
+				Source:     e.Source,
+				Target:     target,
+				Type:       e.Type,
+				Label:      e.Label,
+				Confidence: confidenceFor(e),
+			})
 		}
-		seen[key] = true
-
-		result = append(result, &Edge{
-			Source:     e.Source,
-			Target:     target,
-			Type:       e.Type,
-			Label:      e.Label,
-			Confidence: confidenceFor(e),
-		})
 	}
 	return result
+}
+
+// edgeResolver turns an edge's target into the node IDs it stands for.
+type edgeResolver struct {
+	imports *targetResolver
+	routes  *routeResolver
+	actions *actionResolver
+}
+
+func (r edgeResolver) targets(e *Edge) []string {
+	if ids, isAction := r.actions.resolve(e); isAction {
+		return ids
+	}
+	target, ok := r.routes.resolve(e.Target)
+	if !ok {
+		return nil
+	}
+	if target, ok = r.imports.resolve(target); !ok {
+		return nil
+	}
+	return []string{target}
 }
 
 // confidenceFor applies the import-resolution penalty to edge confidence,
