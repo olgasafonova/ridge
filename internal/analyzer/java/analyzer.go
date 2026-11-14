@@ -48,7 +48,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 
 // javaAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes.
-const javaAnalyzerVersion = "java-v2"
+const javaAnalyzerVersion = "java-v3"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
@@ -102,7 +102,7 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 	}}
 	var edges []*model.Edge
 
-	importNodes, importEdges := extractImports(root, src, modID)
+	importNodes, importEdges := extractImports(root, src, modID, newImportResolver(file, packageName(root, src)))
 	nodes = append(nodes, importNodes...)
 	edges = append(edges, importEdges...)
 
@@ -124,9 +124,11 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 	return nodes, edges, nil
 }
 
-// extractImports walks `import com.foo.Bar;` declarations.
-// The trailing class name is stripped so `com.foo.Bar` → `com.foo`.
-func extractImports(root *sitter.Node, src []byte, modID string) ([]*model.Node, []*model.Edge) {
+// extractImports walks `import com.foo.Bar;` declarations. An import of a
+// project class targets that class's module; any other import keeps the
+// "import:<package>" placeholder, with the class name stripped so
+// `com.foo.Bar` is labelled `com.foo`.
+func extractImports(root *sitter.Node, src []byte, modID string, imports *importResolver) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
@@ -135,13 +137,14 @@ func extractImports(root *sitter.Node, src []byte, modID string) ([]*model.Node,
 		if child.Type() != "import_declaration" {
 			continue
 		}
-		importPath := extractImportPath(child, src)
-		if importPath == "" {
+		im, ok := parseImport(child, src)
+		if !ok {
 			continue
 		}
+		importPath := im.pkg()
 		edges = append(edges, &model.Edge{
 			Source:     modID,
-			Target:     "import:" + importPath,
+			Target:     imports.target(im),
 			Type:       model.EdgeDependency,
 			Label:      importPath,
 			Confidence: 0.9,
@@ -154,20 +157,12 @@ func extractImports(root *sitter.Node, src []byte, modID string) ([]*model.Node,
 	return nodes, edges
 }
 
-// extractImportPath reads an import_declaration and returns the package path,
-// minus the trailing class identifier. `import com.foo.bar.Baz;` → `com.foo.bar`.
-// Wildcard imports `import com.foo.*;` → `com.foo`.
+// extractImportPath returns the package an import_declaration is labelled
+// with. `import com.foo.bar.Baz;` → `com.foo.bar`; the wildcard
+// `import com.foo.*;` → `com.foo`.
 func extractImportPath(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.ChildCount()); i++ {
-		child := node.Child(i)
-		switch child.Type() {
-		case "scoped_identifier":
-			return dropLastSegment(child.Content(src))
-		case "identifier":
-			return child.Content(src)
-		}
-	}
-	return ""
+	im, _ := parseImport(node, src)
+	return im.pkg()
 }
 
 // dropLastSegment removes the trailing `.Segment` from a dotted path.
