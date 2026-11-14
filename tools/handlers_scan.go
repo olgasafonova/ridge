@@ -134,6 +134,12 @@ type ArchScanResult struct {
 	Truncated bool               `json:"truncated,omitempty"`
 }
 
+// Scan runs arch_scan outside an MCP session. The scan subcommand of the
+// binary uses it, so both routes return the same result for the same args.
+func (h *HandlerRegistry) Scan(ctx context.Context, args ArchScanArgs) (*ArchScanResult, error) {
+	return h.archScan(ctx, args)
+}
+
 func (h *HandlerRegistry) archScan(ctx context.Context, args ArchScanArgs) (*ArchScanResult, error) {
 	if err := validateScanInputs(args); err != nil {
 		return nil, err

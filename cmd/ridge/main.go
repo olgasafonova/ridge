@@ -27,6 +27,11 @@ const (
 )
 
 func main() {
+	// "code-to-arch scan <path>" writes scan JSON and exits. With no
+	// subcommand the binary is the MCP server on stdio.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		os.Exit(runCommand(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+	}
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{

@@ -275,6 +275,21 @@ All scan tools accept optional parameters for handling large codebases:
 
 Partial results include a `truncated: true` flag so you know the graph is incomplete. Sequential tool calls on the same path are cached for 30 seconds.
 
+## Command-line scan
+
+The binary can also run one scan without an MCP client and write the whole graph as JSON. Use it when the output is too large to pass through a tool call.
+
+```bash
+code-to-arch scan /path/to/project                      # JSON on stdout
+code-to-arch scan -out scan.json /path/to/project       # JSON in a file
+code-to-arch scan -skip-glob '**/*.md' -include-tests .
+code-to-arch scan -repo my-alias -out scan.json
+```
+
+The output has the same fields as `arch_scan` with `detail: "full"`, with no cap on the number of nodes and edges. Flags: `-out`, `-repo`, `-include-tests`, `-samples`, `-max-files`, `-max-nodes`, `-timeout`, and the repeatable `-skip-dir` and `-skip-glob`. `code-to-arch scan -h` lists them.
+
+Exit code 0 means the scan was written, 1 means the scan or the write failed, 2 means the command line was wrong. Run with no command, the binary is the MCP server.
+
 ## Incremental scanning
 
 Repeat scans on the same codebase are fast. The server tracks file modification times and content hashes in `~/.mcp-context/ridge/`. On subsequent scans, only files that actually changed get re-analyzed; unchanged files reuse cached analysis results.
