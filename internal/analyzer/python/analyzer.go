@@ -48,7 +48,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 // pyAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes
 // (added/removed framework, new infra classification, schema migrations).
-const pyAnalyzerVersion = "py-v1"
+const pyAnalyzerVersion = "py-v2"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
@@ -60,14 +60,24 @@ func (a *Analyzer) Signature() string {
 // Bounds memory and parser work even with WalkTree's iterative walk.
 const maxFileBytes = 5 * 1024 * 1024 // 5 MB
 
-// Analyze parses a Python file and extracts architectural elements.
+// Analyze parses a Python file with no scan root. Module and endpoint IDs fall
+// back to the parent-folder and bare-file-name forms; the scanner uses
+// AnalyzeRooted instead.
 func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
+	return a.AnalyzeRooted("", path)
+}
+
+// AnalyzeRooted parses a Python file and extracts architectural elements.
+// With a scan root, module and endpoint IDs are built from the root-relative
+// path, so every file gets its own nodes.
+func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model.Edge, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
+	file := common.SourceFile{Root: scanRoot, Path: path}
 	if info.Size() > maxFileBytes {
-		return []*model.Node{moduleSkippedForSize(path, info.Size())}, nil, nil
+		return []*model.Node{moduleSkippedForSize(file, info)}, nil, nil
 	}
 
 	src, err := os.ReadFile(path)
@@ -82,16 +92,14 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	dir := filepath.Base(filepath.Dir(path))
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	modID := fmt.Sprintf("mod:%s/%s", dir, base)
+	modID := file.ModuleID()
 
 	var nodes []*model.Node
 	var edges []*model.Edge
 
 	nodes = append(nodes, &model.Node{
 		ID:       modID,
-		Name:     base,
+		Name:     file.ModuleName(),
 		Type:     model.NodeModule,
 		Language: "python",
 		Path:     filepath.Dir(path),
@@ -106,7 +114,7 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	rc := routeContext{
 		src:       src,
 		modID:     modID,
-		filePath:  path,
+		file:      file,
 		framework: detectFramework(root, src),
 	}
 
@@ -117,7 +125,7 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 
 	// Extract Django URL patterns (urls.py files with path()/re_path() calls)
 	if strings.HasSuffix(filepath.Base(path), "urls.py") {
-		djangoNodes, djangoEdges := extractDjangoURLPatterns(root, src, modID, path)
+		djangoNodes, djangoEdges := extractDjangoURLPatterns(root, src, modID, file)
 		nodes = append(nodes, djangoNodes...)
 		edges = append(edges, djangoEdges...)
 	}
@@ -264,7 +272,7 @@ func detectFramework(root *sitter.Node, src []byte) string {
 type routeContext struct {
 	src       []byte
 	modID     string
-	filePath  string
+	file      common.SourceFile
 	framework string
 }
 
@@ -300,7 +308,7 @@ func buildRouteFromDecorator(decorator, defNode *sitter.Node, rc routeContext) (
 		return nil, nil, false
 	}
 	line := int(defNode.StartPoint().Row) + 1
-	endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(rc.filePath), line)
+	endpointID := rc.file.EndpointID(line)
 	fw := resolveFramework(rc.framework, method)
 
 	node := &model.Node{
@@ -308,7 +316,7 @@ func buildRouteFromDecorator(decorator, defNode *sitter.Node, rc routeContext) (
 		Name:     fmt.Sprintf("%s %s", strings.ToUpper(method), routePath),
 		Type:     model.NodeEndpoint,
 		Language: "python",
-		Path:     rc.filePath,
+		Path:     rc.file.Path,
 		Properties: map[string]string{
 			"method":    method,
 			"route":     routePath,
@@ -450,7 +458,7 @@ func djangoFuncName(fn *sitter.Node, src []byte) string {
 }
 
 // extractDjangoURLPatterns finds Django path()/re_path() calls in urls.py files.
-func extractDjangoURLPatterns(root *sitter.Node, src []byte, modID, filePath string) ([]*model.Node, []*model.Edge) {
+func extractDjangoURLPatterns(root *sitter.Node, src []byte, modID string, file common.SourceFile) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
@@ -459,13 +467,13 @@ func extractDjangoURLPatterns(root *sitter.Node, src []byte, modID, filePath str
 		if !ok {
 			return
 		}
-		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(filePath), call.line)
+		endpointID := file.EndpointID(call.line)
 		nodes = append(nodes, &model.Node{
 			ID:       endpointID,
 			Name:     fmt.Sprintf("URL %s", call.route),
 			Type:     model.NodeEndpoint,
 			Language: "python",
-			Path:     filePath,
+			Path:     file.Path,
 			Properties: map[string]string{
 				"method":    call.funcName,
 				"route":     call.route,
@@ -601,18 +609,16 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 
 // moduleSkippedForSize builds a module node for a Python file past the size
 // cap. The module is visible in the graph; no parsing or extraction runs.
-func moduleSkippedForSize(path string, size int64) *model.Node {
-	dir := filepath.Base(filepath.Dir(path))
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+func moduleSkippedForSize(file common.SourceFile, info os.FileInfo) *model.Node {
 	return &model.Node{
-		ID:       fmt.Sprintf("mod:%s/%s", dir, base),
-		Name:     base,
+		ID:       file.ModuleID(),
+		Name:     file.ModuleName(),
 		Type:     model.NodeModule,
 		Language: "python",
-		Path:     filepath.Dir(path),
+		Path:     filepath.Dir(file.Path),
 		Properties: map[string]string{
 			"skipped":      "size",
-			"size_bytes":   fmt.Sprintf("%d", size),
+			"size_bytes":   fmt.Sprintf("%d", info.Size()),
 			"max_capacity": fmt.Sprintf("%d", maxFileBytes),
 		},
 	}

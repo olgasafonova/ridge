@@ -8,7 +8,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/olgasafonova/ridge/internal/drift"
+	"github.com/olgasafonova/ridge/internal/model"
 )
 
 // initDriftTestRepo creates a temp git repo holding a minimal Go module across
@@ -216,7 +219,7 @@ func TestCheckoutAndScan(t *testing.T) {
 	h := NewHandlerRegistry(testLogger())
 
 	t.Run("scans the checked-out ref", func(t *testing.T) {
-		graph, cleanup, err := h.checkoutAndScan(context.Background(), repo, firstCommit, "base")
+		graph, cleanup, err := h.checkoutAndScan(context.Background(), commitScan{repoPath: repo, hash: firstCommit}, "base")
 		if err != nil {
 			t.Fatalf("checkoutAndScan failed: %v", err)
 		}
@@ -231,7 +234,7 @@ func TestCheckoutAndScan(t *testing.T) {
 	})
 
 	t.Run("names the role in the checkout error", func(t *testing.T) {
-		_, cleanup, err := h.checkoutAndScan(context.Background(), repo, "no-such-ref", "head")
+		_, cleanup, err := h.checkoutAndScan(context.Background(), commitScan{repoPath: repo, hash: "no-such-ref"}, "head")
 		if err == nil {
 			cleanup()
 			t.Fatal("expected an error for an unresolvable ref")
@@ -277,5 +280,67 @@ func TestArchDriftExplain_PropagatesDriftError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "base_ref is required") {
 		t.Errorf("error = %q; want it to contain %q", err.Error(), "base_ref is required")
+	}
+}
+
+// The fixture's second commit adds internal/store. Skipping internal on both
+// refs leaves nothing to compare, which proves the option reached both scans.
+func TestArchDriftTools_ApplySkipDirsToBothRefs(t *testing.T) {
+	repo, firstCommit := initDriftTestRepo(t)
+	h := NewHandlerRegistry(testLogger())
+	args := ArchDriftArgs{
+		Path:        repo,
+		BaseRef:     firstCommit,
+		ScanControl: ScanControl{SkipDirs: []string{"internal"}},
+	}
+
+	tools := map[string]func() (*model.DiffReport, error){
+		"arch_drift": func() (*model.DiffReport, error) { return h.archDrift(context.Background(), args) },
+		"arch_drift_explain": func() (*model.DiffReport, error) {
+			res, err := h.archDriftExplain(context.Background(), ArchDriftExplainArgs(args))
+			if err != nil {
+				return nil, err
+			}
+			return res.Report, nil
+		},
+	}
+	for name, run := range tools {
+		t.Run(name, func(t *testing.T) {
+			report, err := run()
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if report.HasChanges() {
+				t.Fatalf("internal/ skipped on both refs, so no drift expected; got %+v", report.Changes)
+			}
+		})
+	}
+}
+
+// A client call is checked against the input schema before the handler runs,
+// so this is the path that used to answer "unexpected additional properties".
+func TestArchDriftTools_AcceptScanControlsOverTheWire(t *testing.T) {
+	repo, firstCommit := initDriftTestRepo(t)
+	session := connectForSchemas(t)
+
+	for _, tool := range []string{"arch_drift", "arch_drift_explain"} {
+		t.Run(tool, func(t *testing.T) {
+			res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+				Name: tool,
+				Arguments: map[string]any{
+					"path":          repo,
+					"base_ref":      firstCommit,
+					"skip_dirs":     []string{"internal"},
+					"skip_globs":    []string{"**/*.md"},
+					"include_tests": true,
+				},
+			})
+			if err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+			if res.IsError {
+				t.Fatalf("%s rejected the call: %+v", tool, res.Content)
+			}
+		})
 	}
 }
