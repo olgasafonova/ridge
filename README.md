@@ -214,6 +214,17 @@ go install github.com/olgasafonova/ridge/cmd/ridge@latest
 
 The binary lands in `$GOPATH/bin` (typically `~/go/bin/ridge`).
 
+### Or download a binary
+
+Each [GitHub release](https://github.com/olgasafonova/ridge/releases) carries prebuilt binaries for macOS (arm64, amd64), Linux (amd64) and Windows (amd64), plus a `SHA256SUMS` file. On Linux arm64, build from source.
+
+```bash
+curl -LO https://github.com/olgasafonova/ridge/releases/latest/download/ridge-darwin-arm64
+curl -LO https://github.com/olgasafonova/ridge/releases/latest/download/SHA256SUMS
+shasum -a 256 --check --ignore-missing SHA256SUMS
+chmod +x ridge-darwin-arm64
+```
+
 ### Or build from source
 
 ```bash
