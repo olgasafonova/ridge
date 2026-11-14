@@ -7,9 +7,29 @@ import (
 	"strings"
 )
 
-// moduleName is the file name without its final extension ("app" for app.ts).
+// svelteExt is the extension of Svelte component files.
+const svelteExt = ".svelte"
+
+// moduleName is the file name as modules are labelled: without its extension
+// for TypeScript ("app" for app.ts), in full for Svelte ("App.svelte").
 func moduleName(path string) string {
-	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return moduleStem(filepath.Base(path))
+}
+
+// moduleStem drops the TypeScript extension from path. Svelte components keep
+// theirs so +page.svelte and +page.ts in one folder get different IDs, and so
+// does a "state.svelte.ts" module, which would otherwise take the ID of a
+// "state.svelte" component next to it.
+func moduleStem(path string) string {
+	ext := filepath.Ext(path)
+	if ext == svelteExt {
+		return path
+	}
+	stem := strings.TrimSuffix(path, ext)
+	if filepath.Ext(stem) == svelteExt {
+		return path
+	}
+	return stem
 }
 
 // moduleID builds the node ID for the module at path.
@@ -21,7 +41,7 @@ func moduleName(path string) string {
 // files in same-named folders.
 func moduleID(root, path string) string {
 	if rel, ok := relToRoot(root, path); ok {
-		return "mod:" + strings.TrimSuffix(rel, filepath.Ext(rel))
+		return "mod:" + moduleStem(rel)
 	}
 	return fmt.Sprintf("mod:%s/%s", filepath.Base(filepath.Dir(path)), moduleName(path))
 }
@@ -33,10 +53,15 @@ func relToRoot(root, path string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil || leavesRoot(rel) {
 		return "", false
 	}
 	return filepath.ToSlash(rel), true
+}
+
+// leavesRoot reports whether a relative path climbs out of its base.
+func leavesRoot(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // importer identifies the file whose imports are being resolved.
@@ -58,7 +83,7 @@ func (a *Analyzer) importerFor(root, path, modID string) importer {
 }
 
 // target returns the edge target for an import specifier: the module ID of
-// the file it points at when that file is a TypeScript module inside the scan
+// the file it points at when that file is a module inside the scan
 // root, otherwise the unresolved "import:<specifier>" placeholder.
 func (im importer) target(spec string) string {
 	if file, ok := im.sourceFile(spec); ok {
@@ -98,25 +123,10 @@ var jsToTS = map[string][]string{
 // resolveModuleFile finds the TypeScript source file an extensionless or
 // .js-suffixed import base refers to, following the order TypeScript's
 // bundler resolution uses: the path itself, source extensions, then a
-// directory index. Files this analyzer does not parse (.svelte, .json, .css)
-// are not matched, so those imports stay unresolved.
+// directory index. Files this analyzer does not parse (.json, .css) are not
+// matched, so those imports stay unresolved.
 func resolveModuleFile(base string) (string, bool) {
-	var candidates []string
-	ext := filepath.Ext(base)
-	switch {
-	case ext == ".ts" || ext == ".tsx":
-		candidates = append(candidates, base)
-	case jsToTS[ext] != nil:
-		stem := strings.TrimSuffix(base, ext)
-		for _, tsExt := range jsToTS[ext] {
-			candidates = append(candidates, stem+tsExt)
-		}
-	}
-	candidates = append(candidates,
-		base+".ts", base+".tsx",
-		filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"),
-	)
-	for _, c := range candidates {
+	for _, c := range moduleFileCandidates(base) {
 		// The candidate comes from an import specifier in scanned source and is
 		// only stat'ed; the caller rejects results outside the scan root.
 		info, err := os.Stat(c) // #nosec G703 -- see comment above
@@ -125,4 +135,25 @@ func resolveModuleFile(base string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// sourceExts are the extensions an import specifier may name outright.
+var sourceExts = map[string]bool{".ts": true, ".tsx": true, svelteExt: true}
+
+// moduleFileCandidates lists the files an import base may refer to, in the
+// order they are tried.
+func moduleFileCandidates(base string) []string {
+	var candidates []string
+	ext := filepath.Ext(base)
+	if sourceExts[ext] {
+		candidates = append(candidates, base)
+	}
+	stem := strings.TrimSuffix(base, ext)
+	for _, tsExt := range jsToTS[ext] {
+		candidates = append(candidates, stem+tsExt)
+	}
+	return append(candidates,
+		base+".ts", base+".tsx",
+		filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"),
+	)
 }

@@ -117,14 +117,14 @@ import { outside } from '../../../outside';
 	got := dependencyTargets(edges)
 
 	for _, want := range []string{
-		"mod:src/domain/entity",   // parent-relative
-		"mod:src/app/helper",      // .js specifier maps to the .ts source
-		"mod:src/app/ports/index", // directory import resolves to its index
-		"mod:src/app/view",        // .tsx
-		"import:./Widget.svelte",  // not a TypeScript module: left unresolved
-		"import:express",          // package import
-		"import:./missing",        // no such file
-		"import:../../../outside", // resolves outside the scan root
+		"mod:src/domain/entity",     // parent-relative
+		"mod:src/app/helper",        // .js specifier maps to the .ts source
+		"mod:src/app/ports/index",   // directory import resolves to its index
+		"mod:src/app/view",          // .tsx
+		"mod:src/app/Widget.svelte", // Svelte component keeps its extension
+		"import:express",            // package import
+		"import:./missing",          // no such file
+		"import:../../../outside",   // resolves outside the scan root
 	} {
 		if !got[want] {
 			t.Errorf("missing dependency target %q; got %v", want, got)

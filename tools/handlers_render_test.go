@@ -303,3 +303,12 @@ func TestArchGenerate_UnsupportedFormatReachesCaller(t *testing.T) {
 		t.Errorf("error = %q; want it to mention the unsupported format", err.Error())
 	}
 }
+
+func TestBuildRenderOptions_GroupDepth(t *testing.T) {
+	if got := buildRenderOptions(ArchGenerateArgs{GroupDepth: 2}).GroupDepth; got != 2 {
+		t.Fatalf("GroupDepth = %d, want 2", got)
+	}
+	if got := buildRenderOptions(ArchGenerateArgs{GroupDepth: -1}).GroupDepth; got != 0 {
+		t.Fatalf("negative group_depth should leave grouping off, got %d", got)
+	}
+}

@@ -40,9 +40,10 @@ func New() *Analyzer {
 	}
 }
 
-// Extensions returns TypeScript/TSX file extensions.
+// Extensions returns the file extensions this analyzer handles. Svelte
+// components are read through their <script> blocks only.
 func (a *Analyzer) Extensions() []string {
-	return []string{".ts", ".tsx"}
+	return []string{".ts", ".tsx", svelteExt}
 }
 
 // Language returns "typescript".
@@ -59,7 +60,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 // tsAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes
 // (added/removed framework, new infra classification, schema migrations).
-const tsAnalyzerVersion = "ts-v2"
+const tsAnalyzerVersion = "ts-v3"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
@@ -95,12 +96,10 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	parser := a.tsParser
-	if strings.HasSuffix(path, ".tsx") {
-		parser = a.tsxParser
+	if filepath.Ext(path) == svelteExt {
+		src = svelteScriptSource(src)
 	}
-
-	tree, err := parser.ParseCtx(context.Background(), nil, src)
+	tree, err := a.parserFor(path).ParseCtx(context.Background(), nil, src)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
@@ -113,7 +112,7 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 		ID:       modID,
 		Name:     moduleName(path),
 		Type:     model.NodeModule,
-		Language: "typescript",
+		Language: languageOf(path),
 		Path:     filepath.Dir(path),
 	}}
 	var edges []*model.Edge
@@ -122,37 +121,47 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 	nodes = append(nodes, importNodes...)
 	edges = append(edges, importEdges...)
 
-	// Detect framework from imports before extracting routes
-	framework := detectFramework(root, src)
-
-	// Extract route handlers
-	routeNodes, routeEdges := extractRoutes(root, fileCtx{
-		src:       src,
-		modID:     modID,
-		filePath:  path,
-		framework: framework,
-	})
-	nodes = append(nodes, routeNodes...)
-	edges = append(edges, routeEdges...)
-
-	// Extract NestJS decorator-based routes
-	if framework == "nestjs" {
-		nestNodes, nestEdges := extractNestJSRoutes(root, fileCtx{
-			src:       src,
-			modID:     modID,
-			filePath:  path,
-			framework: framework,
-		})
-		nodes = append(nodes, nestNodes...)
-		edges = append(edges, nestEdges...)
+	ctx := fileCtx{
+		src:      src,
+		modID:    modID,
+		scanRoot: scanRoot,
+		filePath: path,
+		// Detect framework from imports before extracting routes
+		framework: detectFramework(root, src),
 	}
 
-	// Detect outbound HTTP client calls
-	callNodes, callEdges := extractHTTPCalls(root, src, modID)
-	nodes = append(nodes, callNodes...)
-	edges = append(edges, callEdges...)
+	extractors := []func(*sitter.Node, fileCtx) ([]*model.Node, []*model.Edge){
+		extractRoutes,
+		extractSvelteKitRoutes,
+		extractHTTPCalls,
+	}
+	if ctx.framework == "nestjs" {
+		extractors = append(extractors, extractNestJSRoutes)
+	}
+	for _, extract := range extractors {
+		n, e := extract(root, ctx)
+		nodes = append(nodes, n...)
+		edges = append(edges, e...)
+	}
 
 	return nodes, edges, nil
+}
+
+// parserFor picks the grammar for the file at path. Svelte script blocks and
+// plain TypeScript share one; only .tsx needs the JSX-aware grammar.
+func (a *Analyzer) parserFor(path string) *sitter.Parser {
+	if filepath.Ext(path) == ".tsx" {
+		return a.tsxParser
+	}
+	return a.tsParser
+}
+
+// languageOf names the source language of the file at path for node metadata.
+func languageOf(path string) string {
+	if filepath.Ext(path) == svelteExt {
+		return "svelte"
+	}
+	return "typescript"
 }
 
 // extractImports walks the top-level import statements and emits dependency
@@ -285,8 +294,20 @@ func detectFramework(root *sitter.Node, src []byte) string {
 type fileCtx struct {
 	src       []byte
 	modID     string
+	scanRoot  string // absolute scan root; "" when unknown
 	filePath  string
 	framework string
+}
+
+// locatedID builds a node ID for something found at a line of the file:
+// "<kind>:<root-relative path>:<line>". Without a scan root it falls back to
+// the bare file name, which collides for same-named files in different folders.
+func (c fileCtx) locatedID(kind string, line int) string {
+	file := filepath.Base(c.filePath)
+	if rel, ok := relToRoot(c.scanRoot, c.filePath); ok {
+		file = rel
+	}
+	return fmt.Sprintf("%s:%s:%d", kind, file, line)
 }
 
 func extractRoutes(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge) {
@@ -294,12 +315,12 @@ func extractRoutes(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge
 	var edges []*model.Edge
 
 	common.WalkTree(root, func(node *sitter.Node) {
-		method, route, ok := matchRouteCall(node, ctx.src)
+		method, route, ok := matchRouteCall(node, ctx)
 		if !ok {
 			return
 		}
 		line := int(node.StartPoint().Row) + 1
-		endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(ctx.filePath), line)
+		endpointID := ctx.locatedID("endpoint", line)
 
 		nodes = append(nodes, &model.Node{
 			ID:       endpointID,
@@ -326,9 +347,18 @@ func extractRoutes(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge
 	return nodes, edges
 }
 
+// routerReceivers are the names a router or app object usually goes by.
+var routerReceivers = map[string]bool{
+	"app": true, "router": true, "server": true, "fastify": true,
+	"route": true, "routes": true, "instance": true,
+}
+
 // matchRouteCall recognizes router.get('/path', handler) style calls and
 // returns (method, route, true). Anything else returns ok=false.
-func matchRouteCall(node *sitter.Node, src []byte) (method, route string, ok bool) {
+//
+// A method name alone is not enough: form.get('file') and
+// headers.get('content-type') have the same shape. See isRouteRegistration.
+func matchRouteCall(node *sitter.Node, ctx fileCtx) (method, route string, ok bool) {
 	if node.Type() != "call_expression" {
 		return "", "", false
 	}
@@ -340,15 +370,79 @@ func matchRouteCall(node *sitter.Node, src []byte) (method, route string, ok boo
 	if prop == nil {
 		return "", "", false
 	}
-	method = strings.ToLower(prop.Content(src))
+	method = strings.ToLower(prop.Content(ctx.src))
 	if !httpMethods[method] {
 		return "", "", false
 	}
-	route, hasArg := firstStringArg(node, src)
+	route, hasArg := firstStringArg(node, ctx.src)
 	if !hasArg {
 		return "", "", false
 	}
+	call := routeCall{
+		receiver: receiverName(fn.ChildByFieldName("object"), ctx.src),
+		route:    route,
+		argCount: argCount(node),
+		inWebApp: ctx.framework != "unknown",
+	}
+	if !call.isRouteRegistration() {
+		return "", "", false
+	}
 	return method, route, true
+}
+
+// routeCall is what is known about an x.get('...') shaped call.
+type routeCall struct {
+	receiver string // last name of the object the method is called on
+	route    string // first argument
+	argCount int
+	inWebApp bool // the file imports a web framework
+}
+
+// isRouteRegistration separates route registrations from other calls to a
+// method named get, post, delete and so on.
+//
+//   - A route that looks like a path ("/users", "*") counts when the receiver
+//     is a known router name, the file imports a web framework, or the call
+//     also passes a handler. HTTP client receivers (axios.get('/users')) are
+//     outbound calls unless the file imports a web framework.
+//   - Any other string ('users') counts only on a known router name with a
+//     handler, which leaves out app.get('env') and form.get('file').
+func (c routeCall) isRouteRegistration() bool {
+	known := routerReceivers[c.receiver]
+	hasHandler := c.argCount >= 2
+	if !strings.HasPrefix(c.route, "/") && c.route != "*" {
+		return known && hasHandler
+	}
+	if httpClientObjects[c.receiver] && !c.inWebApp {
+		return false
+	}
+	return known || c.inWebApp || hasHandler
+}
+
+// receiverName returns the last name in the object a method is called on:
+// "router" for router.get, "app" for this.app.get, "" for a call result.
+func receiverName(obj *sitter.Node, src []byte) string {
+	if obj == nil {
+		return ""
+	}
+	switch obj.Type() {
+	case "identifier":
+		return obj.Content(src)
+	case "member_expression":
+		if prop := obj.ChildByFieldName("property"); prop != nil {
+			return prop.Content(src)
+		}
+	}
+	return ""
+}
+
+// argCount returns the number of arguments passed to a call_expression.
+func argCount(call *sitter.Node) int {
+	args := call.ChildByFieldName("arguments")
+	if args == nil {
+		return 0
+	}
+	return int(args.NamedChildCount())
 }
 
 // extractNestJSRoutes detects NestJS @Controller/@Get/@Post decorator patterns
@@ -387,7 +481,7 @@ func extractInjectableService(classNode *sitter.Node, ctx fileCtx) ([]*model.Nod
 		return nil, nil
 	}
 	line := int(classNode.StartPoint().Row) + 1
-	serviceID := fmt.Sprintf("service:%s:%d", filepath.Base(ctx.filePath), line)
+	serviceID := ctx.locatedID("service", line)
 	node := &model.Node{
 		ID:       serviceID,
 		Name:     className,
@@ -454,7 +548,7 @@ func methodRoute(pending []*sitter.Node, method *sitter.Node, src []byte) (strin
 
 func buildNestJSEndpoint(method *sitter.Node, ctx fileCtx, fullPath, httpMethod string) (*model.Node, *model.Edge) {
 	line := int(method.StartPoint().Row) + 1
-	endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(ctx.filePath), line)
+	endpointID := ctx.locatedID("endpoint", line)
 	node := &model.Node{
 		ID:       endpointID,
 		Name:     fmt.Sprintf("%s %s", httpMethod, fullPath),
@@ -612,9 +706,12 @@ var httpClientObjects = map[string]bool{
 	"axios": true, "http": true, "client": true, "api": true,
 }
 
-// extractHTTPCalls detects outbound HTTP calls (fetch, axios.get, etc.)
-// and creates service nodes for target hosts.
-func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Node, []*model.Edge) {
+// extractHTTPCalls detects outbound HTTP calls (fetch, axios.get, etc.). A
+// call to an absolute URL creates a service node for the target host. A call
+// to a path on the same origin (fetch('/api/analyze')) emits an edge to a
+// "route:<METHOD> <path>" placeholder, which the graph resolves to the
+// endpoint serving that path.
+func extractHTTPCalls(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*model.Edge) {
 	var nodes []*model.Node
 	var edges []*model.Edge
 
@@ -622,44 +719,51 @@ func extractHTTPCalls(root *sitter.Node, src []byte, modID string) ([]*model.Nod
 		if node.Type() != "call_expression" {
 			return
 		}
-		method, ok := httpCallMethod(node, src)
+		method, ok := httpCallMethod(node, ctx.src)
 		if !ok {
 			return
 		}
-		rawURL, ok := firstStringArg(node, src)
+		rawURL, ok := firstURLArg(node, ctx.src)
 		if !ok {
 			return
 		}
-		host, ok := common.ParseServiceFromURL(rawURL)
+		edge := &model.Edge{
+			Source:     ctx.modID,
+			Type:       model.EdgeAPICall,
+			Label:      method + " " + rawURL,
+			Confidence: 0.7,
+			Properties: map[string]string{
+				"url":  rawURL,
+				"line": fmt.Sprintf("%d", int(node.StartPoint().Row)+1),
+			},
+		}
+		if isSameOriginPath(rawURL) {
+			edge.Target = model.RouteTarget(method, rawURL)
+			edges = append(edges, edge)
+			return
+		}
+		host, ok := common.ParseServiceFromURL(strings.ReplaceAll(rawURL, model.RouteWildcard, "x"))
 		if !ok {
 			return
 		}
-
-		serviceID := "service:" + host
-		line := int(node.StartPoint().Row) + 1
-
+		edge.Target = "service:" + host
 		nodes = append(nodes, &model.Node{
-			ID:   serviceID,
+			ID:   edge.Target,
 			Name: host,
 			Type: model.NodeExternalAPI,
 			Properties: map[string]string{
 				"detected_via": "http_call",
 			},
 		})
-		edges = append(edges, &model.Edge{
-			Source:     modID,
-			Target:     serviceID,
-			Type:       model.EdgeAPICall,
-			Label:      method + " " + rawURL,
-			Confidence: 0.7,
-			Properties: map[string]string{
-				"url":  rawURL,
-				"line": fmt.Sprintf("%d", line),
-			},
-		})
+		edges = append(edges, edge)
 	})
 
 	return nodes, edges
+}
+
+// isSameOriginPath reports whether url is a path on the app's own origin.
+func isSameOriginPath(url string) bool {
+	return strings.HasPrefix(url, "/") && !strings.HasPrefix(url, "//")
 }
 
 // httpCallMethod returns the HTTP method for a call_expression, or ok=false
@@ -672,13 +776,61 @@ func httpCallMethod(call *sitter.Node, src []byte) (string, bool) {
 	switch fn.Type() {
 	case "identifier":
 		if fn.Content(src) == "fetch" {
-			return "GET", true
+			return fetchMethod(call, src), true
 		}
 		return "", false
 	case "member_expression":
 		return memberHTTPMethod(fn, src)
 	}
 	return "", false
+}
+
+// fetchMethod reads the method from fetch(url, { method: 'POST' }). GET is
+// the default when no options object names one.
+func fetchMethod(call *sitter.Node, src []byte) string {
+	if m := stringProperty(fetchOptions(call), "method", src); m != "" {
+		return strings.ToUpper(m)
+	}
+	return "GET"
+}
+
+// fetchOptions returns the options object literal passed as the second
+// argument of a fetch call, or nil.
+func fetchOptions(call *sitter.Node) *sitter.Node {
+	args := call.ChildByFieldName("arguments")
+	if args == nil || args.NamedChildCount() < 2 {
+		return nil
+	}
+	if opts := args.NamedChild(1); opts.Type() == "object" {
+		return opts
+	}
+	return nil
+}
+
+// stringProperty returns the string literal assigned to key in an object
+// literal, or "" when obj is nil or has no such property.
+func stringProperty(obj *sitter.Node, key string, src []byte) string {
+	if obj == nil {
+		return ""
+	}
+	for i := 0; i < int(obj.NamedChildCount()); i++ {
+		pair := obj.NamedChild(i)
+		if pair.Type() != "pair" || propertyName(pair.ChildByFieldName("key"), src) != key {
+			continue
+		}
+		if value := pair.ChildByFieldName("value"); value != nil {
+			return extractStringLiteral(value, src)
+		}
+	}
+	return ""
+}
+
+// propertyName returns an object key without its quotes; "" for a nil node.
+func propertyName(key *sitter.Node, src []byte) string {
+	if key == nil {
+		return ""
+	}
+	return stripQuotes(key.Content(src))
 }
 
 func memberHTTPMethod(fn *sitter.Node, src []byte) (string, bool) {
@@ -696,16 +848,44 @@ func memberHTTPMethod(fn *sitter.Node, src []byte) (string, bool) {
 
 // firstStringArg returns the first string-literal argument to a call_expression.
 func firstStringArg(call *sitter.Node, src []byte) (string, bool) {
-	args := call.ChildByFieldName("arguments")
-	if args == nil || args.ChildCount() < 2 {
-		return "", false
-	}
-	firstArg := args.Child(1) // Child(0) is "("
+	firstArg := firstArg(call)
 	if firstArg == nil {
 		return "", false
 	}
 	s := extractStringLiteral(firstArg, src)
 	return s, s != ""
+}
+
+// firstURLArg returns the first argument of an HTTP call as a URL. A template
+// literal is accepted too, with each ${...} replaced by model.RouteWildcard.
+func firstURLArg(call *sitter.Node, src []byte) (string, bool) {
+	arg := firstArg(call)
+	if arg == nil {
+		return "", false
+	}
+	if arg.Type() != "template_string" {
+		s := extractStringLiteral(arg, src)
+		return s, s != ""
+	}
+	var sb strings.Builder
+	for i := 0; i < int(arg.ChildCount()); i++ {
+		switch child := arg.Child(i); child.Type() {
+		case "template_substitution":
+			sb.WriteString(model.RouteWildcard)
+		case "`":
+		default:
+			sb.WriteString(child.Content(src))
+		}
+	}
+	return sb.String(), sb.Len() > 0
+}
+
+func firstArg(call *sitter.Node) *sitter.Node {
+	args := call.ChildByFieldName("arguments")
+	if args == nil || args.ChildCount() < 2 {
+		return nil
+	}
+	return args.Child(1) // Child(0) is "("
 }
 
 // extractStringLiteral extracts a string value from a tree-sitter string node.
@@ -731,7 +911,7 @@ func moduleSkippedForSize(root, path string, size int64) *model.Node {
 		ID:       moduleID(root, path),
 		Name:     moduleName(path),
 		Type:     model.NodeModule,
-		Language: "typescript",
+		Language: languageOf(path),
 		Path:     filepath.Dir(path),
 		Properties: map[string]string{
 			"skipped":      "size",

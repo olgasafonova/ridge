@@ -41,6 +41,10 @@ type VisibleGraph struct {
 	IDs         map[string]bool
 	Names       map[string]string // node ID → display name
 	PrunedNodes []string          // names of nodes removed by super-node pruning
+
+	// keepAllEdges turns TransitiveReduce into a no-op. Set for folder-grouped
+	// graphs, where each arrow carries a count that a longer path does not imply.
+	keepAllEdges bool
 }
 
 // FilterGraph returns nodes and edges visible at the given view level.
@@ -71,6 +75,9 @@ func FilterGraph(graph *model.ArchGraph, level ViewLevel) *VisibleGraph {
 // For each edge (u→v) of type T, if v is reachable from u through
 // intermediate nodes using only edges of type T, the direct edge is redundant.
 func (vg *VisibleGraph) TransitiveReduce() {
+	if vg.keepAllEdges {
+		return
+	}
 	adj := buildEdgeTypeAdjacency(vg.Edges)
 	vg.Edges = filterRenderEdges(vg.Edges, func(e *model.Edge) bool {
 		return !transitiveReachable(adj[string(e.Type)], e.Source, e.Target)
@@ -432,6 +439,7 @@ func PrepareGraph(graph *model.ArchGraph, opts Options) *VisibleGraph {
 	vg := FilterGraph(graph, opts.ViewLevel)
 	PruneSuperNodes(vg, opts.PruneThreshold)
 	KeepHighDegree(vg, opts.MinDegree)
+	vg.keepAllEdges = opts.GroupDepth > 0
 	return vg
 }
 

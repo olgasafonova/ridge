@@ -34,7 +34,7 @@ Returns a summary by default; set detail="full" for the node/edge graph (capped 
 Pair detail="full" with samples=true to populate each file-backed node's source field with a few representative code lines (default 6, override via sample_lines) — useful for agents that want code context without a separate file Read round-trip.
 For a single service or subdirectory, use arch_focus instead.
 Pass paths (array of strings) instead of path to scan multiple directories and merge into a single graph — each node carries a source field recording which scan root produced it. Use this for cross-substrate analysis (code + docs + vault in one graph). paths and path/repo are mutually exclusive; passing both returns a validation error.
-WHY: Parses Go with go/ast, TypeScript / Python / Rust / Java with tree-sitter, markdown with link extraction. Detects dependencies from import statements only; dynamic loading, reflection, or runtime service discovery is invisible.
+WHY: Parses Go with go/ast, TypeScript / Python / Rust / Java with tree-sitter (Svelte components through their script blocks; SvelteKit routes from +server.ts and +page.server.ts file paths), markdown with link extraction. Detects dependencies from import statements only; dynamic loading, reflection, or runtime service discovery is invisible.
 FAILS WHEN: directory path doesn't exist (check path and retry), directory contains no supported files (Go, TypeScript, Python, Rust, Java, or markdown).`,
 		Category: "analysis",
 		ReadOnly: true,
@@ -63,6 +63,7 @@ The forcegraph format produces a self-contained D3-driven force-directed page (~
 Optional theme_bg and theme_fg hex colors (e.g. "#ffffff", "#1e293b") derive a full Mermaid color palette from two colors. Works with Mermaid and HTML formats.
 Set prune_threshold (0.0-1.0) to remove ubiquitous nodes like logging or fmt that clutter diagrams. A value of 0.5 removes nodes targeted by more than 50% of source nodes.
 Set min_degree (integer >= 1) to drop nodes whose total in+out degree is below the threshold — useful for knowledge graphs / Obsidian vaults where Mermaid's hierarchical layout breaks down past ~50 nodes. min_degree=5 typically reduces a 300-note vault to its hubs.
+Set group_depth (integer >= 1) to collapse files into one box per folder with the number of imports on each arrow. Use it when a module graph has more boxes than a diagram can show (a few hundred files); group_depth=2 or 3 usually gives a readable layered view.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), invalid format name (valid: mermaid, plantuml, c4, structurizr, drawio, excalidraw, json, html, forcegraph).`,
 		Category: "diagram",
 		ReadOnly: true,

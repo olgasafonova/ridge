@@ -397,10 +397,10 @@ func TestAnalyze_InvalidFile(t *testing.T) {
 func TestExtensions(t *testing.T) {
 	a := New()
 	exts := a.Extensions()
-	if len(exts) != 2 {
-		t.Fatalf("expected 2 extensions, got %d", len(exts))
+	if len(exts) != 3 {
+		t.Fatalf("expected 3 extensions, got %d", len(exts))
 	}
-	expected := map[string]bool{".ts": true, ".tsx": true}
+	expected := map[string]bool{".ts": true, ".tsx": true, ".svelte": true}
 	for _, ext := range exts {
 		if !expected[ext] {
 			t.Fatalf("unexpected extension: %s", ext)
