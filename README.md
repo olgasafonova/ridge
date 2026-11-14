@@ -168,7 +168,7 @@ tsconfig parsing tolerates JSONC (comments and trailing commas), and the walk ho
 | Language | Analyzer | Detection |
 |----------|---------|-----------|
 | Go | `go/ast` (stdlib) | Packages, imports, HTTP handlers, infrastructure |
-| TypeScript/TSX, Svelte | tree-sitter | Modules, imports, Express/Fastify/Koa routes, SvelteKit file routes and form actions, same-origin `fetch` calls linked to the endpoint they hit, infrastructure. Svelte components are read through their `<script>` blocks only |
+| TypeScript/TSX, Svelte | tree-sitter | Modules, imports and re-exports, Express/Fastify/Koa routes, SvelteKit file routes and form actions, same-origin `fetch` calls linked to the endpoint they hit (also when the URL is a `const` in the same file), infrastructure. Svelte components are read through their `<script>` blocks, plus `action="?/name"` and `formaction` in markup, which link to the form action of each page that renders the component |
 | Python | tree-sitter | Modules, imports, Flask/FastAPI routes, infrastructure |
 | Markdown | regex link extraction | Notes, Obsidian wiki-links `[[note]]`, relative `[text](./file.md)` links |
 

@@ -87,3 +87,16 @@ func TestResolvedEdges_RouteTargetEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+// Two calls from one module that reach the same endpoint are one edge.
+func TestResolvedEdges_SameEndpointTwiceIsOneEdge(t *testing.T) {
+	g := NewGraph("/tmp/project")
+	g.AddNode(endpointNode("endpoint:trace:1", "post", "/api/trace"))
+	g.AddNode(&Node{ID: "mod:caller", Type: NodeModule})
+	g.AddEdge(&Edge{Source: "mod:caller", Target: "route:POST /api/trace", Type: EdgeAPICall})
+	g.AddEdge(&Edge{Source: "mod:caller", Target: "route:GET /api/trace", Type: EdgeAPICall})
+
+	if got := g.ResolvedEdges(); len(got) != 1 || got[0].Target != "endpoint:trace:1" {
+		t.Fatalf("want one edge to endpoint:trace:1, got %d", len(got))
+	}
+}

@@ -60,7 +60,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 // tsAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes
 // (added/removed framework, new infra classification, schema migrations).
-const tsAnalyzerVersion = "ts-v4"
+const tsAnalyzerVersion = "ts-v5"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
@@ -96,7 +96,9 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
+	var markupEdges []*model.Edge
 	if filepath.Ext(path) == svelteExt {
+		markupEdges = svelteFormActionEdges(src, moduleID(scanRoot, path))
 		src = svelteScriptSource(src)
 	}
 	tree, err := a.parserFor(path).ParseCtx(context.Background(), nil, src)
@@ -115,7 +117,7 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 		Language: languageOf(path),
 		Path:     filepath.Dir(path),
 	}}
-	var edges []*model.Edge
+	edges := markupEdges
 
 	importNodes, importEdges := extractImports(root, src, a.importerFor(scanRoot, path, modID))
 	nodes = append(nodes, importNodes...)
@@ -164,29 +166,34 @@ func languageOf(path string) string {
 	return "typescript"
 }
 
-// extractImports walks the top-level import statements and emits dependency
-// edges plus any infrastructure nodes/edges classified from each import path.
+// extractImports walks the top-level import statements and re-exports and
+// emits one dependency edge per referenced module, plus any infrastructure
+// nodes/edges classified from each import path.
 func extractImports(root *sitter.Node, src []byte, imp importer) ([]*model.Node, []*model.Edge) {
 	modID := imp.modID
 	var nodes []*model.Node
 	var edges []*model.Edge
+	byTarget := make(map[string]*model.Edge)
 	for i := 0; i < int(root.ChildCount()); i++ {
-		child := root.Child(i)
-		if child.Type() != "import_statement" {
+		ref, ok := moduleReference(root.Child(i), src)
+		if !ok {
 			continue
 		}
-		importPath := extractImportSource(child, src)
-		if importPath == "" {
-			continue
+		target := imp.target(ref.path)
+		edge := byTarget[target]
+		if edge == nil {
+			edge = &model.Edge{
+				Source:     modID,
+				Target:     target,
+				Type:       model.EdgeDependency,
+				Label:      ref.path,
+				Confidence: 0.9,
+			}
+			byTarget[target] = edge
+			edges = append(edges, edge)
 		}
-		edges = append(edges, &model.Edge{
-			Source:     modID,
-			Target:     imp.target(importPath),
-			Type:       model.EdgeDependency,
-			Label:      importPath,
-			Confidence: 0.9,
-		})
-		infraNodes, infraEdges := common.ClassifyImport(importPath, modID, infraPatterns, "/")
+		recordNames(edge, ref)
+		infraNodes, infraEdges := common.ClassifyImport(ref.path, modID, infraPatterns, "/")
 		nodes = append(nodes, infraNodes...)
 		edges = append(edges, infraEdges...)
 	}
@@ -856,28 +863,16 @@ func firstStringArg(call *sitter.Node, src []byte) (string, bool) {
 	return s, s != ""
 }
 
-// firstURLArg returns the first argument of an HTTP call as a URL. A template
-// literal is accepted too, with each ${...} replaced by model.RouteWildcard.
+// firstURLArg returns the first argument of an HTTP call as a URL. See
+// urlReader for what is read: literals, templates with each unknown ${...}
+// replaced by model.RouteWildcard, and const bindings in the same file.
 func firstURLArg(call *sitter.Node, src []byte) (string, bool) {
 	arg := firstArg(call)
 	if arg == nil {
 		return "", false
 	}
-	if arg.Type() != "template_string" {
-		s := extractStringLiteral(arg, src)
-		return s, s != ""
-	}
-	var sb strings.Builder
-	for i := 0; i < int(arg.ChildCount()); i++ {
-		switch child := arg.Child(i); child.Type() {
-		case "template_substitution":
-			sb.WriteString(model.RouteWildcard)
-		case "`":
-		default:
-			sb.WriteString(child.Content(src))
-		}
-	}
-	return sb.String(), sb.Len() > 0
+	s := urlReader{src: src, hops: maxURLHops}.value(arg)
+	return s, s != ""
 }
 
 func firstArg(call *sitter.Node) *sitter.Node {

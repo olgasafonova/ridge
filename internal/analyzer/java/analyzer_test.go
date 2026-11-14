@@ -161,6 +161,98 @@ func TestAnalyze_SkipsOversizedFile(t *testing.T) {
 	}
 }
 
+// writeJavaAt writes a Java file at a path below root, creating folders.
+func writeJavaAt(t *testing.T, root, rel, content string) string {
+	t.Helper()
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
+}
+
+const sameNameController = `package com.acme.web;
+
+import org.springframework.web.bind.annotation.GetMapping;
+
+public class Controller {
+    @GetMapping("/ping")
+    public String ping() { return ""; }
+}
+`
+
+// Two modules of one build each have web/Controller.java. The parent-folder
+// ID gave both "mod:web/Controller" and both endpoints "endpoint:Controller.java:6".
+func TestAnalyzeRooted_SameNamedFilesGetOwnIDs(t *testing.T) {
+	root := t.TempDir()
+	billing := writeJavaAt(t, root, "billing/src/main/java/com/acme/web/Controller.java", sameNameController)
+	orders := writeJavaAt(t, root, "orders/src/main/java/com/acme/web/Controller.java", sameNameController)
+	a := New()
+
+	bNodes, bEdges, err := a.AnalyzeRooted(root, billing)
+	if err != nil {
+		t.Fatalf("AnalyzeRooted billing: %v", err)
+	}
+	oNodes, _, err := a.AnalyzeRooted(root, orders)
+	if err != nil {
+		t.Fatalf("AnalyzeRooted orders: %v", err)
+	}
+
+	const bMod = "mod:billing/src/main/java/com/acme/web/Controller"
+	const oMod = "mod:orders/src/main/java/com/acme/web/Controller"
+	if bNodes[0].ID != bMod || oNodes[0].ID != oMod {
+		t.Fatalf("module IDs: got %q and %q, want %q and %q", bNodes[0].ID, oNodes[0].ID, bMod, oMod)
+	}
+	if bNodes[0].Name != "Controller" {
+		t.Fatalf("module name: got %q, want Controller", bNodes[0].Name)
+	}
+
+	const bEp = "endpoint:billing/src/main/java/com/acme/web/Controller.java:6"
+	const oEp = "endpoint:orders/src/main/java/com/acme/web/Controller.java:6"
+	if findNodeByID(bNodes, bEp) == nil || findNodeByID(oNodes, oEp) == nil {
+		t.Fatalf("endpoint IDs: got %v and %v", nodeIDs(bNodes), nodeIDs(oNodes))
+	}
+	for _, e := range bEdges {
+		if e.Source != bMod {
+			t.Fatalf("edge source %q, want %q", e.Source, bMod)
+		}
+	}
+}
+
+func TestAnalyzeRooted_FallsBackOutsideRoot(t *testing.T) {
+	path := writeJavaAt(t, t.TempDir(), "web/Controller.java", sameNameController)
+	a := New()
+
+	for _, root := range []string{"", t.TempDir()} {
+		nodes, _, err := a.AnalyzeRooted(root, path)
+		if err != nil {
+			t.Fatalf("AnalyzeRooted: %v", err)
+		}
+		if nodes[0].ID != "mod:web/Controller" {
+			t.Fatalf("root %q: module ID %q, want mod:web/Controller", root, nodes[0].ID)
+		}
+		if findNodeByID(nodes, "endpoint:Controller.java:6") == nil {
+			t.Fatalf("root %q: endpoint IDs %v", root, nodeIDs(nodes))
+		}
+	}
+}
+
+func TestAnalyzeRooted_OversizedFileKeepsRootedID(t *testing.T) {
+	root := t.TempDir()
+	path := writeJavaAt(t, root, "gen/Huge.java", string(make([]byte, maxFileBytes+1)))
+
+	nodes, _, err := New().AnalyzeRooted(root, path)
+	if err != nil {
+		t.Fatalf("AnalyzeRooted: %v", err)
+	}
+	if len(nodes) != 1 || nodes[0].ID != "mod:gen/Huge" || nodes[0].Properties["skipped"] != "size" {
+		t.Fatalf("got %v", nodes)
+	}
+}
+
 // --- test helpers ---
 
 func hasNodeOfType(nodes []*model.Node, t model.NodeType) bool {
