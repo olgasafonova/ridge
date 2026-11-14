@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -321,6 +323,60 @@ func TestScanWithOptions_SkipGlobsDoubleStar(t *testing.T) {
 		if n.Type == model.NodeNote {
 			t.Fatalf("note %q survived skip_globs **/*.md", n.ID)
 		}
+	}
+}
+
+// Bead bkf: builders, fakes and stubs under a tests folder have no test file
+// name, and were analyzed as production code.
+func TestScanWithOptions_TestFoldersSkippedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "src/app.ts", "export const app = 1;\n")
+	writeFile(t, dir, "src/latest.ts", "export const latest = 1;\n") // "test" inside a name is not a test folder
+	writeFile(t, dir, "tests/builders/caseBuilder.ts", "export const build = () => ({});\n")
+	writeFile(t, dir, "tests/fakes/fakeStore.ts", "export class FakeStore {}\n")
+	writeFile(t, dir, "src/lib/__tests__/helpers.ts", "export const helper = 1;\n")
+	writeFile(t, dir, "src/lib/__mocks__/api.ts", "export const api = {};\n")
+	writeFile(t, dir, "src/test/setup.ts", "export const setup = 1;\n")
+	writeFile(t, dir, "pkg/testdata/sample.ts", "export const sample = 1;\n")
+
+	moduleNames := func(opts scanner.ScanOptions) []string {
+		t.Helper()
+		result, err := scanner.New(testLogger(), typescript.New()).ScanWithOptions(context.Background(), dir, opts)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		var names []string
+		for _, n := range result.Graph.Nodes() {
+			if n.Type == model.NodeModule {
+				names = append(names, n.Name)
+			}
+		}
+		sort.Strings(names)
+		return names
+	}
+
+	if got, want := moduleNames(scanner.ScanOptions{}), "app,latest"; strings.Join(got, ",") != want {
+		t.Errorf("default scan modules = %v, want %s", got, want)
+	}
+	all := "api,app,caseBuilder,fakeStore,helpers,latest,sample,setup"
+	if got := moduleNames(scanner.ScanOptions{IncludeTests: true}); strings.Join(got, ",") != all {
+		t.Errorf("IncludeTests scan modules = %v, want %s", got, all)
+	}
+}
+
+// Scanning a tests folder directly analyzes it: only folders below the scan
+// root count as test folders.
+func TestScanWithOptions_ScanRootInsideTestsFolder(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "tests/builders/caseBuilder.ts", "export const build = () => ({});\n")
+
+	result, err := scanner.New(testLogger(), typescript.New()).
+		ScanWithOptions(context.Background(), filepath.Join(dir, "tests"), scanner.ScanOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Stats.FilesAnalyzed != 1 {
+		t.Fatalf("files analyzed = %d, want 1", result.Stats.FilesAnalyzed)
 	}
 }
 

@@ -55,8 +55,8 @@ func (h *HandlerRegistry) cachedScan(ctx context.Context, path, alias string, op
 // scanOptsKey builds a deterministic cache-key suffix from the limit and
 // skip-pattern fields of ScanOptions.
 func scanOptsKey(opts scanner.ScanOptions) string {
-	return fmt.Sprintf("%d|%d|%d|%s|%s",
-		opts.MaxFiles, opts.MaxNodes, opts.Workers,
+	return fmt.Sprintf("%d|%d|%d|%t|%s|%s",
+		opts.MaxFiles, opts.MaxNodes, opts.Workers, opts.IncludeTests,
 		strings.Join(opts.SkipDirs, ","),
 		strings.Join(opts.SkipGlobs, ","),
 	)

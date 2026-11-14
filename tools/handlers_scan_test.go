@@ -39,3 +39,16 @@ func TestArchScan_MutualExclusion_RepoAndPaths(t *testing.T) {
 		t.Errorf("error = %q; want %q", err.Error(), want)
 	}
 }
+
+// include_tests reaches the scanner, and a scan with tests is cached apart
+// from one without.
+func TestScanControl_IncludeTests(t *testing.T) {
+	without := ScanControl{}.toScanOptions()
+	with := ScanControl{IncludeTests: true}.toScanOptions()
+	if without.IncludeTests || !with.IncludeTests {
+		t.Fatalf("IncludeTests = %v and %v, want false and true", without.IncludeTests, with.IncludeTests)
+	}
+	if scanOptsKey(without) == scanOptsKey(with) {
+		t.Fatalf("cache key %q is the same with and without tests", scanOptsKey(with))
+	}
+}
