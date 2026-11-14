@@ -22,6 +22,7 @@ import (
 type Analyzer struct {
 	tsParser  *sitter.Parser
 	tsxParser *sitter.Parser
+	aliases   *aliasCache
 }
 
 // New creates a TypeScript analyzer with tree-sitter parsers.
@@ -35,6 +36,7 @@ func New() *Analyzer {
 	return &Analyzer{
 		tsParser:  tsParser,
 		tsxParser: tsxParser,
+		aliases:   newAliasCache(),
 	}
 }
 
@@ -57,7 +59,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 // tsAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes
 // (added/removed framework, new infra classification, schema migrations).
-const tsAnalyzerVersion = "ts-v1"
+const tsAnalyzerVersion = "ts-v2"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
@@ -69,14 +71,23 @@ func (a *Analyzer) Signature() string {
 // Bounds memory and parser work even with WalkTree's iterative walk.
 const maxFileBytes = 5 * 1024 * 1024 // 5 MB
 
-// Analyze parses a TypeScript file and extracts architectural elements.
+// Analyze parses a TypeScript file with no scan root. Module IDs fall back to
+// the parent-folder form and relative imports stay unresolved; the scanner
+// uses AnalyzeRooted instead.
 func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
+	return a.AnalyzeRooted("", path)
+}
+
+// AnalyzeRooted parses a TypeScript file and extracts architectural elements.
+// With a scan root, the module ID is the root-relative path (unique per file)
+// and relative imports are resolved to the module they point at.
+func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model.Edge, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, nil, fmt.Errorf("stat %s: %w", path, err)
 	}
 	if info.Size() > maxFileBytes {
-		return []*model.Node{moduleSkippedForSize(path, info.Size())}, nil, nil
+		return []*model.Node{moduleSkippedForSize(scanRoot, path, info.Size())}, nil, nil
 	}
 
 	src, err := os.ReadFile(path)
@@ -96,20 +107,18 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	defer tree.Close()
 	root := tree.RootNode()
 
-	dir := filepath.Base(filepath.Dir(path))
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	modID := fmt.Sprintf("mod:%s/%s", dir, base)
+	modID := moduleID(scanRoot, path)
 
 	nodes := []*model.Node{{
 		ID:       modID,
-		Name:     base,
+		Name:     moduleName(path),
 		Type:     model.NodeModule,
 		Language: "typescript",
 		Path:     filepath.Dir(path),
 	}}
 	var edges []*model.Edge
 
-	importNodes, importEdges := extractImports(root, src, modID)
+	importNodes, importEdges := extractImports(root, src, a.importerFor(scanRoot, path, modID))
 	nodes = append(nodes, importNodes...)
 	edges = append(edges, importEdges...)
 
@@ -148,7 +157,8 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 
 // extractImports walks the top-level import statements and emits dependency
 // edges plus any infrastructure nodes/edges classified from each import path.
-func extractImports(root *sitter.Node, src []byte, modID string) ([]*model.Node, []*model.Edge) {
+func extractImports(root *sitter.Node, src []byte, imp importer) ([]*model.Node, []*model.Edge) {
+	modID := imp.modID
 	var nodes []*model.Node
 	var edges []*model.Edge
 	for i := 0; i < int(root.ChildCount()); i++ {
@@ -162,7 +172,7 @@ func extractImports(root *sitter.Node, src []byte, modID string) ([]*model.Node,
 		}
 		edges = append(edges, &model.Edge{
 			Source:     modID,
-			Target:     "import:" + importPath,
+			Target:     imp.target(importPath),
 			Type:       model.EdgeDependency,
 			Label:      importPath,
 			Confidence: 0.9,
@@ -716,12 +726,10 @@ func extractStringLiteral(node *sitter.Node, src []byte) string {
 
 // moduleSkippedForSize builds a module node for a TypeScript file past the
 // size cap. The module is visible in the graph; no parsing or extraction runs.
-func moduleSkippedForSize(path string, size int64) *model.Node {
-	dir := filepath.Base(filepath.Dir(path))
-	base := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+func moduleSkippedForSize(root, path string, size int64) *model.Node {
 	return &model.Node{
-		ID:       fmt.Sprintf("mod:%s/%s", dir, base),
-		Name:     base,
+		ID:       moduleID(root, path),
+		Name:     moduleName(path),
 		Type:     model.NodeModule,
 		Language: "typescript",
 		Path:     filepath.Dir(path),

@@ -12,6 +12,8 @@ import (
 // analyzer-path function needs. Replaces a 6-7 argument list across runAnalysis
 // / analyzeSequential / analyzeParallel.
 type analyzeContext struct {
+	// root is the absolute scan root, handed to root-aware analyzers.
+	root     string
 	state    *ScanState
 	graph    *model.ArchGraph
 	stats    *ScanStats
@@ -66,7 +68,7 @@ func (s *Scanner) analyzeSequential(ctx context.Context, toAnalyze []fileWork, a
 		if ctx.Err() != nil {
 			return true
 		}
-		nodes, edges, err := s.analyzers[f.ext].Analyze(f.path)
+		nodes, edges, err := analyzeFile(s.analyzers[f.ext], ac.root, f.path)
 		if err != nil {
 			s.logger.Warn("Analyzer error", "path", f.path, "error", err)
 			continue
@@ -89,7 +91,7 @@ func (s *Scanner) analyzeParallel(ctx context.Context, toAnalyze []fileWork, wor
 	var wg sync.WaitGroup
 	for range workers {
 		wg.Add(1)
-		go s.worker(ctx, &wg, workCh, resultCh)
+		go s.worker(ctx, &wg, ac.root, workCh, resultCh)
 	}
 	for _, f := range toAnalyze {
 		workCh <- f
@@ -115,14 +117,14 @@ func (s *Scanner) analyzeParallel(ctx context.Context, toAnalyze []fileWork, wor
 
 // worker is one fan-out goroutine: clones analyzers (for thread-safety) and
 // drains workCh, posting analyzeResults to resultCh.
-func (s *Scanner) worker(ctx context.Context, wg *sync.WaitGroup, workCh <-chan fileWork, resultCh chan<- analyzeResult) {
+func (s *Scanner) worker(ctx context.Context, wg *sync.WaitGroup, root string, workCh <-chan fileWork, resultCh chan<- analyzeResult) {
 	defer wg.Done()
 	cloned := s.cloneAnalyzers()
 	for f := range workCh {
 		if ctx.Err() != nil {
 			continue // drain channel
 		}
-		nodes, edges, err := cloned[f.ext].Analyze(f.path)
+		nodes, edges, err := analyzeFile(cloned[f.ext], root, f.path)
 		if err != nil {
 			s.logger.Warn("Analyzer error", "path", f.path, "error", err)
 			continue

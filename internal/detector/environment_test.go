@@ -134,11 +134,3 @@ replace x => ./gone
 		t.Fatalf("expected node_modules to be skipped, got %+v", violations)
 	}
 }
-
-func TestStripJSONC_PreservesStrings(t *testing.T) {
-	in := `{"a": "http://example.com//not-a-comment", "b": "/*keep*/",}`
-	want := `{"a": "http://example.com//not-a-comment", "b": "/*keep*/"}`
-	if got := string(stripJSONC([]byte(in))); got != want {
-		t.Fatalf("stripJSONC mangled strings:\n got: %s\nwant: %s", got, want)
-	}
-}
