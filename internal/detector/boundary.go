@@ -58,6 +58,11 @@ type boundaryMarkers struct {
 	gradleBuilds []string
 	cmdDirs      []string
 
+	// pnpmWorkspaces lists every pnpm-workspace.yaml found. The file also
+	// holds settings for single-package repos, so finding one proves nothing;
+	// hasPnpmWorkspace is set only when one of them lists packages.
+	pnpmWorkspaces []string
+
 	hasGoWork        bool
 	hasNxJSON        bool
 	hasTurboJSON     bool
@@ -145,6 +150,12 @@ func collectBoundaryMarkers(absRoot string) (*boundaryMarkers, error) {
 		classifyMarkerFile(m, fileLoc{name: d.Name(), rel: rel})
 		return nil
 	})
+	for _, rel := range m.pnpmWorkspaces {
+		if pnpmWorkspaceListsPackages(filepath.Join(absRoot, rel)) {
+			m.hasPnpmWorkspace = true
+			break
+		}
+	}
 	return m, err
 }
 

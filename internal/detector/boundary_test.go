@@ -264,3 +264,56 @@ func TestDetectBoundaries_EmptyDir(t *testing.T) {
 		t.Fatalf("expected unknown for empty dir, got %s", result.Topology)
 	}
 }
+
+func TestDetectBoundaries_PnpmWorkspaceWithPackages(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "package.json", `{"name":"root"}`)
+	writeFile(t, dir, "pnpm-workspace.yaml", "packages:\n  - 'apps/*'\n  - 'packages/*'\n")
+	writeFile(t, dir, "apps/web/package.json", `{"name":"web"}`)
+
+	result, err := DetectBoundaries(dir)
+	if err != nil {
+		t.Fatalf("DetectBoundaries failed: %v", err)
+	}
+	if result.Topology != model.TopologyMonorepo || !result.Signals.HasWorkspaceConfig {
+		t.Fatalf("topology = %s, has_workspace_config = %v; want monorepo with a workspace config",
+			result.Topology, result.Signals.HasWorkspaceConfig)
+	}
+}
+
+// Bead evw: pnpm reads settings from pnpm-workspace.yaml too, so a repo with
+// one package can have the file without being a workspace.
+func TestDetectBoundaries_PnpmSettingsFileIsNotAWorkspace(t *testing.T) {
+	settingsOnly := []struct {
+		name    string
+		content string
+	}{
+		{"settings only", "onlyBuiltDependencies:\n  - esbuild\noverrides:\n  cookie: ^0.7.0\n"},
+		{"empty packages list", "packages: []\n"},
+		{"blank entries", "packages:\n  - ''\n"},
+		{"empty file", ""},
+		{"not yaml", "packages: [unclosed\n"},
+	}
+	for _, tt := range settingsOnly {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeFile(t, dir, "package.json", `{"name":"app"}`)
+			writeFile(t, dir, "pnpm-workspace.yaml", tt.content)
+
+			result, err := DetectBoundaries(dir)
+			if err != nil {
+				t.Fatalf("DetectBoundaries failed: %v", err)
+			}
+			if result.Topology != model.TopologyMonolith || result.Signals.HasWorkspaceConfig {
+				t.Fatalf("topology = %s (%s), has_workspace_config = %v; want monolith without a workspace config",
+					result.Topology, result.Reason, result.Signals.HasWorkspaceConfig)
+			}
+		})
+	}
+}
+
+func TestPnpmWorkspaceListsPackages_MissingFile(t *testing.T) {
+	if pnpmWorkspaceListsPackages(filepath.Join(t.TempDir(), "pnpm-workspace.yaml")) {
+		t.Fatal("a missing file lists no packages")
+	}
+}
