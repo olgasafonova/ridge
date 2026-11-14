@@ -273,6 +273,8 @@ All scan tools accept optional parameters for handling large codebases:
 | `include_tests` | Analyze test code too. By default test files (`*_test.go`, `*.test.ts`, `test_*.py`) and everything under folders named `tests`, `test`, `__tests__`, `__mocks__` or `testdata` are left out |
 | `skip_globs` | File patterns to skip. Without a slash the pattern matches the file name in any folder (`*_test.go`, `*.spec.ts`); with a slash it matches the path from the scan root, and `**` stands for any number of folders (`**/*.md`, `**/generated/**`) |
 
+`arch_drift`, `arch_drift_explain` and `arch_history` take the same parameters and apply them to every ref or commit they scan, so the graphs they compare stay comparable.
+
 Partial results include a `truncated: true` flag so you know the graph is incomplete. Sequential tool calls on the same path are cached for 30 seconds.
 
 ## Command-line scan

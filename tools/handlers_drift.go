@@ -64,6 +64,7 @@ type ArchDriftArgs struct {
 	Repo    string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	BaseRef string `json:"base_ref" jsonschema:"Git ref to treat as the before state (branch, tag, or commit sha). Required. Ridge checks it out into a temporary worktree and scans it."`
 	HeadRef string `json:"head_ref,omitempty" jsonschema:"Git ref to treat as the after state. Defaults to HEAD when omitted."`
+	ScanControl
 }
 
 func (h *HandlerRegistry) archDrift(ctx context.Context, args ArchDriftArgs) (*model.DiffReport, error) {
@@ -82,13 +83,14 @@ func (h *HandlerRegistry) archDrift(ctx context.Context, args ArchDriftArgs) (*m
 		headRef = "HEAD"
 	}
 
-	baseGraph, baseCleanup, err := h.checkoutAndScan(ctx, path, args.BaseRef, "base")
+	opts := args.toScanOptions()
+	baseGraph, baseCleanup, err := h.checkoutAndScan(ctx, commitScan{repoPath: path, hash: args.BaseRef, opts: opts}, "base")
 	if err != nil {
 		return nil, err
 	}
 	defer baseCleanup()
 
-	headGraph, headCleanup, err := h.checkoutAndScan(ctx, path, headRef, "head")
+	headGraph, headCleanup, err := h.checkoutAndScan(ctx, commitScan{repoPath: path, hash: headRef, opts: opts}, "head")
 	if err != nil {
 		return nil, err
 	}
@@ -100,20 +102,22 @@ func (h *HandlerRegistry) archDrift(ctx context.Context, args ArchDriftArgs) (*m
 	return report, nil
 }
 
-// checkoutAndScan checks out a git ref into a worktree and scans it. The
-// returned cleanup must be deferred by the caller. role is used in error
-// messages ("base" / "head") so failures point at the right argument.
-func (h *HandlerRegistry) checkoutAndScan(ctx context.Context, repoPath, ref, role string) (*model.ArchGraph, func(), error) {
-	worktree, cleanup, err := drift.CheckoutRef(ctx, repoPath, ref)
+// checkoutAndScan checks out a git ref into a worktree and scans it with the
+// ref's scan options. Both refs of a drift get the same options, so the two
+// graphs stay comparable. The returned cleanup must be deferred by the
+// caller. role is used in error messages ("base" / "head") so failures point
+// at the right argument.
+func (h *HandlerRegistry) checkoutAndScan(ctx context.Context, ref commitScan, role string) (*model.ArchGraph, func(), error) {
+	worktree, cleanup, err := drift.CheckoutRef(ctx, ref.repoPath, ref.hash)
 	if err != nil {
-		return nil, nil, fmt.Errorf("checking out %s ref %s: %w", role, ref, err)
+		return nil, nil, fmt.Errorf("checking out %s ref %s: %w", role, ref.hash, err)
 	}
-	graph, err := h.scanner.Scan(worktree)
+	scanned, err := h.scanner.ScanWithOptions(ctx, worktree, ref.opts)
 	if err != nil {
 		cleanup()
 		return nil, nil, fmt.Errorf("scanning %s ref: %w", role, err)
 	}
-	return graph, cleanup, nil
+	return scanned.Graph, cleanup, nil
 }
 
 // =============================================================================
@@ -125,6 +129,7 @@ type ArchDriftExplainArgs struct {
 	Repo    string `json:"repo,omitempty" jsonschema:"Alias of a codebase previously registered with arch_registry_add, used instead of path. Supply either path or repo; path takes precedence when both are set."`
 	BaseRef string `json:"base_ref" jsonschema:"Git ref to treat as the before state (branch, tag, or commit sha). Required. Ridge checks it out into a temporary worktree and scans it."`
 	HeadRef string `json:"head_ref,omitempty" jsonschema:"Git ref to treat as the after state. Defaults to HEAD when omitted."`
+	ScanControl
 }
 
 type ArchDriftExplainResult struct {

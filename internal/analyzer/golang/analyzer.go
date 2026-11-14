@@ -42,15 +42,23 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 // goAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes
 // (added/removed framework, new infra classification, schema migrations).
-const goAnalyzerVersion = "go-v1"
+const goAnalyzerVersion = "go-v2"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {
 	return goAnalyzerVersion
 }
 
-// Analyze parses a Go file and extracts architectural elements.
+// Analyze parses a Go file with no scan root. Endpoint IDs fall back to the
+// bare file name; the scanner uses AnalyzeRooted instead.
 func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
+	return a.AnalyzeRooted("", path)
+}
+
+// AnalyzeRooted parses a Go file and extracts architectural elements. With a
+// scan root, endpoint IDs are built from the root-relative path, so routes in
+// same-named files of different folders get their own nodes.
+func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model.Edge, error) {
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
@@ -91,7 +99,7 @@ func (a *Analyzer) Analyze(path string) ([]*model.Node, []*model.Edge, error) {
 	// Detect web framework from imports
 	cc := callContext{
 		pkgID:     pkgID,
-		filePath:  path,
+		file:      common.SourceFile{Root: scanRoot, Path: path},
 		fset:      fset,
 		framework: detectFramework(file),
 	}
@@ -245,7 +253,7 @@ func detectFramework(file *ast.File) string {
 // function signature stays under the Go arg threshold.
 type callContext struct {
 	pkgID     string
-	filePath  string
+	file      common.SourceFile
 	fset      *token.FileSet
 	framework string
 }
@@ -289,13 +297,13 @@ func matchHTTPRouteRegistration(call *ast.CallExpr, cc callContext) (*model.Node
 		return nil, nil, false
 	}
 	pos := cc.fset.Position(call.Pos())
-	endpointID := fmt.Sprintf("endpoint:%s:%d", filepath.Base(cc.filePath), pos.Line)
+	endpointID := cc.file.EndpointID(pos.Line)
 	node := &model.Node{
 		ID:       endpointID,
 		Name:     fmt.Sprintf("%s %s", strings.ToUpper(funcName), route),
 		Type:     model.NodeEndpoint,
 		Language: "go",
-		Path:     cc.filePath,
+		Path:     cc.file.Path,
 		Properties: map[string]string{
 			"method":    funcName,
 			"route":     route,
