@@ -2,18 +2,23 @@ package model
 
 import "strings"
 
-// ResolvedEdges returns edges with import:/wikilink: targets rewritten to the
-// concrete node IDs they reference. Unresolvable edges are dropped.
+// ResolvedEdges returns edges with import:/wikilink:/route: targets rewritten
+// to the concrete node IDs they reference. Unresolvable edges are dropped.
 func (g *ArchGraph) ResolvedEdges() []*Edge {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
 	resolver := newTargetResolver(g.nodes, g.RootPath)
+	routes := newRouteResolver(g.nodes)
 	seen := make(map[string]bool)
 	var result []*Edge
 
 	for _, e := range g.edges {
-		target, ok := resolver.resolve(e.Target)
+		target, ok := routes.resolve(e.Target)
+		if !ok {
+			continue
+		}
+		target, ok = resolver.resolve(target)
 		if !ok {
 			continue
 		}

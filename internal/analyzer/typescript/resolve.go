@@ -7,9 +7,29 @@ import (
 	"strings"
 )
 
-// moduleName is the file name without its final extension ("app" for app.ts).
+// svelteExt is the extension of Svelte component files.
+const svelteExt = ".svelte"
+
+// moduleName is the file name as modules are labelled: without its extension
+// for TypeScript ("app" for app.ts), in full for Svelte ("App.svelte").
 func moduleName(path string) string {
-	return strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	return moduleStem(filepath.Base(path))
+}
+
+// moduleStem drops the TypeScript extension from path. Svelte components keep
+// theirs so +page.svelte and +page.ts in one folder get different IDs, and so
+// does a "state.svelte.ts" module, which would otherwise take the ID of a
+// "state.svelte" component next to it.
+func moduleStem(path string) string {
+	ext := filepath.Ext(path)
+	if ext == svelteExt {
+		return path
+	}
+	stem := strings.TrimSuffix(path, ext)
+	if filepath.Ext(stem) == svelteExt {
+		return path
+	}
+	return stem
 }
 
 // moduleID builds the node ID for the module at path.
@@ -21,7 +41,7 @@ func moduleName(path string) string {
 // files in same-named folders.
 func moduleID(root, path string) string {
 	if rel, ok := relToRoot(root, path); ok {
-		return "mod:" + strings.TrimSuffix(rel, filepath.Ext(rel))
+		return "mod:" + moduleStem(rel)
 	}
 	return fmt.Sprintf("mod:%s/%s", filepath.Base(filepath.Dir(path)), moduleName(path))
 }
@@ -58,7 +78,7 @@ func (a *Analyzer) importerFor(root, path, modID string) importer {
 }
 
 // target returns the edge target for an import specifier: the module ID of
-// the file it points at when that file is a TypeScript module inside the scan
+// the file it points at when that file is a module inside the scan
 // root, otherwise the unresolved "import:<specifier>" placeholder.
 func (im importer) target(spec string) string {
 	if file, ok := im.sourceFile(spec); ok {
@@ -98,13 +118,13 @@ var jsToTS = map[string][]string{
 // resolveModuleFile finds the TypeScript source file an extensionless or
 // .js-suffixed import base refers to, following the order TypeScript's
 // bundler resolution uses: the path itself, source extensions, then a
-// directory index. Files this analyzer does not parse (.svelte, .json, .css)
-// are not matched, so those imports stay unresolved.
+// directory index. Files this analyzer does not parse (.json, .css) are not
+// matched, so those imports stay unresolved.
 func resolveModuleFile(base string) (string, bool) {
 	var candidates []string
 	ext := filepath.Ext(base)
 	switch {
-	case ext == ".ts" || ext == ".tsx":
+	case ext == ".ts" || ext == ".tsx" || ext == svelteExt:
 		candidates = append(candidates, base)
 	case jsToTS[ext] != nil:
 		stem := strings.TrimSuffix(base, ext)

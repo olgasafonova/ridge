@@ -34,7 +34,7 @@ Returns a summary by default; set detail="full" for the node/edge graph (capped 
 Pair detail="full" with samples=true to populate each file-backed node's source field with a few representative code lines (default 6, override via sample_lines) — useful for agents that want code context without a separate file Read round-trip.
 For a single service or subdirectory, use arch_focus instead.
 Pass paths (array of strings) instead of path to scan multiple directories and merge into a single graph — each node carries a source field recording which scan root produced it. Use this for cross-substrate analysis (code + docs + vault in one graph). paths and path/repo are mutually exclusive; passing both returns a validation error.
-WHY: Parses Go with go/ast, TypeScript / Python / Rust / Java with tree-sitter, markdown with link extraction. Detects dependencies from import statements only; dynamic loading, reflection, or runtime service discovery is invisible.
+WHY: Parses Go with go/ast, TypeScript / Python / Rust / Java with tree-sitter (Svelte components through their script blocks; SvelteKit routes from +server.ts and +page.server.ts file paths), markdown with link extraction. Detects dependencies from import statements only; dynamic loading, reflection, or runtime service discovery is invisible.
 FAILS WHEN: directory path doesn't exist (check path and retry), directory contains no supported files (Go, TypeScript, Python, Rust, Java, or markdown).`,
 		Category: "analysis",
 		ReadOnly: true,
