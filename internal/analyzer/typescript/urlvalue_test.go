@@ -58,13 +58,80 @@ func TestAnalyzeRooted_FetchWithVariableURL(t *testing.T) {
 	}
 	sort.Strings(got)
 	want := []string{
+		"route:GET /api/built",
 		"route:GET /api/items/*",
+		"route:GET /api/mutable", // a let nothing assigns to again
 		"route:POST /api/analyze",
 		"service:api.example.com",
 		"service:ws.example.no",
 	}
 	if !equalStrings(got, want) {
 		t.Fatalf("api call targets = %v, want %v", got, want)
+	}
+}
+
+func TestAnalyzeRooted_FetchWithURLObjectsAndLets(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"src/lib/wms.ts": "const BASE = 'https://maps.example.no/wms';\n" +
+			"let reassigned = '/api/first';\n" +
+			"reassigned = '/api/second';\n" +
+			"export async function calls(layer: { url: string }, base: string) {\n" +
+			"  const wms = new URL(BASE);\n" +
+			"  wms.searchParams.append('request', 'GetMap');\n" +
+			"  await fetch(wms.toString());\n" +
+			"  const joined = new URL('/v2/tiles', BASE);\n" +
+			"  await fetch(joined.href);\n" +
+			"  await fetch(String(new URL('/api/page', window.location.href)));\n" +
+			"  let path = '/api/let';\n" +
+			"  await fetch(path, { method: 'POST' });\n" +
+			"  await fetch(new URL('https://abs.example.com/x', base));\n" +
+			"  // Not knowable from the file:\n" +
+			"  await fetch(new URL(layer.url).toString());\n" +
+			"  await fetch(new URL('/api/unknown-base', base));\n" +
+			"  await fetch(new URL('relative', BASE));\n" +
+			"  await fetch(new Request('/api/request'));\n" +
+			"  await fetch(new URL());\n" +
+			"  await fetch(reassigned);\n" +
+			"  let counter = '/api/count';\n" +
+			"  counter += '/more';\n" +
+			"  await fetch(counter);\n" +
+			"  let moved = new URL('/api/moved', location.origin);\n" +
+			"  moved.pathname = '/api/elsewhere';\n" +
+			"  await fetch(moved);\n" +
+			"  await fetch(wms.toString('x'));\n" +
+			"  await fetch(wms.origin);\n" +
+			"  await fetch(wms.toJSON());\n" +
+			"  await fetch(String(wms, 'x'));\n" +
+			"  await fetch(make()());\n" +
+			"}\n",
+	})
+	_, edges, err := New().AnalyzeRooted(root, filepath.Join(root, "src", "lib", "wms.ts"))
+	if err != nil {
+		t.Fatalf("AnalyzeRooted failed: %v", err)
+	}
+
+	var got []string
+	for target := range apiCallTargets(edges) {
+		got = append(got, target)
+	}
+	sort.Strings(got)
+	want := []string{
+		"route:GET /api/page",
+		"route:POST /api/let",
+		"service:abs.example.com",
+		"service:maps.example.no",
+	}
+	if !equalStrings(got, want) {
+		t.Fatalf("api call targets = %v, want %v", got, want)
+	}
+	urls := make(map[string]bool)
+	for _, e := range edges {
+		urls[e.Properties["url"]] = true
+	}
+	for _, u := range []string{"https://maps.example.no/wms", "https://maps.example.no/v2/tiles"} {
+		if !urls[u] {
+			t.Errorf("no call to %s; urls = %v", u, urls)
+		}
 	}
 }
 
