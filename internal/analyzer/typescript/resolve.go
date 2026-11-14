@@ -117,8 +117,10 @@ func resolveModuleFile(base string) (string, bool) {
 		filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"),
 	)
 	for _, c := range candidates {
-		//nolint:gosec // G703: candidate is built from an import specifier in scanned source and only stat'ed; the caller rejects results outside the scan root
-		if info, err := os.Stat(c); err == nil && info.Mode().IsRegular() {
+		// The candidate comes from an import specifier in scanned source and is
+		// only stat'ed; the caller rejects results outside the scan root.
+		info, err := os.Stat(c) // #nosec G703 -- see comment above
+		if err == nil && info.Mode().IsRegular() {
 			return c, true
 		}
 	}
