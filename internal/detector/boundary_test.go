@@ -317,3 +317,13 @@ func TestPnpmWorkspaceListsPackages_MissingFile(t *testing.T) {
 		t.Fatal("a missing file lists no packages")
 	}
 }
+
+func TestPnpmWorkspaceListsPackages_NotAFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "pnpm-workspace.yaml")
+	if err := os.Mkdir(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if pnpmWorkspaceListsPackages(dir) {
+		t.Fatal("a folder with the file's name lists no packages")
+	}
+}

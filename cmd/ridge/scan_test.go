@@ -139,3 +139,27 @@ func TestScanCommand_Help(t *testing.T) {
 		t.Errorf("help not printed to stderr:\nstdout=%q\nstderr=%q", stdout, stderr)
 	}
 }
+
+// failingWriter stands for a closed pipe.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, os.ErrClosed }
+
+func TestScanCommand_StdoutWriteFailure(t *testing.T) {
+	var stderr bytes.Buffer
+	code := runCommand(context.Background(), []string{"scan", scanFixture(t)}, failingWriter{}, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "writing result") {
+		t.Fatalf("exit %d, stderr %q; want exit %d and a write error", code, stderr.String(), exitError)
+	}
+}
+
+func TestScanCommand_SaysWhenALimitCutTheScan(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "scan.json")
+	code, stdout, stderr := runForTest(t, "scan", "-max-files", "1", "-out", out, scanFixture(t))
+	if code != exitOK {
+		t.Fatalf("exit %d, stderr: %s", code, stderr)
+	}
+	if !strings.Contains(stdout, "truncated") {
+		t.Fatalf("stdout = %q, want it to say the scan was truncated", stdout)
+	}
+}

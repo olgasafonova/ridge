@@ -52,3 +52,12 @@ func TestScanControl_IncludeTests(t *testing.T) {
 		t.Fatalf("cache key %q is the same with and without tests", scanOptsKey(with))
 	}
 }
+
+// Scan is the route the command-line mode takes into arch_scan.
+func TestScan_SameChecksAsArchScan(t *testing.T) {
+	h := NewHandlerRegistry(testLogger())
+	_, err := h.Scan(context.Background(), ArchScanArgs{Path: "/a", Paths: []string{"/b"}})
+	if err == nil {
+		t.Fatal("Scan accepted both path and paths")
+	}
+}
