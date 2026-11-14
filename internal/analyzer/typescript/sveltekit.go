@@ -250,11 +250,20 @@ func objectLiteral(value *sitter.Node) *sitter.Node {
 func propertyKey(prop *sitter.Node) *sitter.Node {
 	switch prop.Type() {
 	case "pair":
-		return prop.ChildByFieldName("key")
+		return staticKey(prop.ChildByFieldName("key"))
 	case "method_definition":
-		return prop.ChildByFieldName("name")
+		return staticKey(prop.ChildByFieldName("name"))
 	case "shorthand_property_identifier":
 		return prop
 	}
 	return nil
+}
+
+// staticKey returns key unless it is computed ("[name]: ..."), whose name is
+// only known at run time.
+func staticKey(key *sitter.Node) *sitter.Node {
+	if key == nil || key.Type() == "computed_property_name" {
+		return nil
+	}
+	return key
 }

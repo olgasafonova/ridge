@@ -53,3 +53,37 @@ func TestResolvedEdges_RouteTargets(t *testing.T) {
 		}
 	}
 }
+
+func TestResolvedEdges_RouteTargetEdgeCases(t *testing.T) {
+	g := NewGraph("/tmp/project")
+	g.AddNode(endpointNode("endpoint:home:1", "get", "/"))
+	g.AddNode(endpointNode("endpoint:trace:1", "post", "/api/trace"))
+	g.AddNode(endpointNode("endpoint:double:1", "get", "/a//b"))
+
+	tests := []struct {
+		caller string
+		target string
+		want   string // "" = dropped
+	}{
+		{"mod:home", "route:GET /", "endpoint:home:1"},              // a route with no segments
+		{"mod:short", "route:GET /api", ""},                         // called path is shorter than the declared route
+		{"mod:double", "route:GET /a//b", "endpoint:double:1"},      // an empty segment is a literal, not a parameter
+		{"mod:first", "route:POST /api/trace", "endpoint:trace:1"},  // first lookup fills the cache
+		{"mod:second", "route:POST /api/trace", "endpoint:trace:1"}, // second caller is served from it
+		{"mod:miss1", "route:GET /nowhere", ""},
+		{"mod:miss2", "route:GET /nowhere", ""}, // a cached miss stays a miss
+	}
+	for _, tt := range tests {
+		g.AddNode(&Node{ID: tt.caller, Type: NodeModule})
+		g.AddEdge(&Edge{Source: tt.caller, Target: tt.target, Type: EdgeAPICall})
+	}
+	got := make(map[string]string)
+	for _, e := range g.ResolvedEdges() {
+		got[e.Source] = e.Target
+	}
+	for _, tt := range tests {
+		if got[tt.caller] != tt.want {
+			t.Errorf("%s -> %s resolved to %q, want %q", tt.caller, tt.target, got[tt.caller], tt.want)
+		}
+	}
+}

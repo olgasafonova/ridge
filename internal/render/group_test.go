@@ -1,6 +1,7 @@
 package render
 
 import (
+	"sort"
 	"strings"
 	"testing"
 
@@ -136,5 +137,31 @@ func TestMermaid_GroupedKeepsCountedArrows(t *testing.T) {
 	out := Mermaid(GroupByFolder(g, opts.GroupDepth), opts)
 	if got := strings.Count(out, "1 import"); got != 3 {
 		t.Fatalf("expected 3 counted arrows, got %d:\n%s", got, out)
+	}
+}
+
+func TestGroupByFolder_EdgesBetweenUngroupedNodes(t *testing.T) {
+	g := model.NewGraph("/repo")
+	g.AddNode(&model.Node{ID: "mod:src/a", Name: "a", Type: model.NodeModule, Path: "/repo/src"})
+	g.AddNode(&model.Node{ID: "infra:database", Name: "Database", Type: model.NodeDatabase})
+	g.AddNode(&model.Node{ID: "infra:queue", Name: "Queue", Type: model.NodeQueue})
+	// Same pair of nodes, two edge types: the arrows stay separate and sorted by type.
+	g.AddEdge(&model.Edge{Source: "mod:src/a", Target: "infra:database", Type: model.EdgeReadWrite, Label: "pg"})
+	g.AddEdge(&model.Edge{Source: "mod:src/a", Target: "infra:database", Type: model.EdgeDependency, Label: "pg"})
+	// A single edge between two nodes that are not folders keeps its label.
+	g.AddEdge(&model.Edge{Source: "infra:queue", Target: "infra:database", Type: model.EdgeDataFlow, Label: "writes orders"})
+
+	var got []string
+	for _, e := range GroupByFolder(g, 2).Edges() {
+		got = append(got, e.Source+" -> "+e.Target+" ["+string(e.Type)+"] "+e.Label)
+	}
+	sort.Strings(got)
+	want := []string{
+		"dir:src -> infra:database [" + string(model.EdgeDependency) + "] 1 import",
+		"dir:src -> infra:database [" + string(model.EdgeReadWrite) + "] 1 read write",
+		"infra:queue -> infra:database [" + string(model.EdgeDataFlow) + "] writes orders",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("edges =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
