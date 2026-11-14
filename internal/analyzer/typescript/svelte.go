@@ -17,14 +17,7 @@ var (
 // the result has the same length and a node's line number in it is the line
 // number in the component file.
 func svelteScriptSource(src []byte) []byte {
-	out := make([]byte, len(src))
-	for i, b := range src {
-		if b == '\n' || b == '\r' {
-			out[i] = b
-		} else {
-			out[i] = ' '
-		}
-	}
+	out := blanked(src)
 	pos := 0
 	for {
 		start, end, ok := nextScriptBody(src, pos)
@@ -34,6 +27,17 @@ func svelteScriptSource(src []byte) []byte {
 		copy(out[start:end], src[start:end])
 		pos = end
 	}
+}
+
+// blanked returns a copy of src with every byte but line breaks set to a space.
+func blanked(src []byte) []byte {
+	out := bytes.Repeat([]byte{' '}, len(src))
+	for i, b := range src {
+		if b == '\n' || b == '\r' {
+			out[i] = b
+		}
+	}
+	return out
 }
 
 // nextScriptBody finds the next <script> block at or after from and returns

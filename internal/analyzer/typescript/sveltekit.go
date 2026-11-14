@@ -3,6 +3,7 @@ package typescript
 import (
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -37,47 +38,73 @@ func extractSvelteKitRoutes(root *sitter.Node, ctx fileCtx) ([]*model.Node, []*m
 	if !ok {
 		return nil, nil
 	}
-
-	var nodes []*model.Node
-	var edges []*model.Edge
-	add := func(method, name string, props map[string]string, line int) {
-		id := ctx.locatedID("endpoint", line)
-		props["method"] = strings.ToLower(method)
-		props["route"] = route
-		props["line"] = fmt.Sprintf("%d", line)
-		props["framework"] = "sveltekit"
-		nodes = append(nodes, &model.Node{
-			ID:         id,
-			Name:       name,
-			Type:       model.NodeEndpoint,
-			Language:   "typescript",
-			Path:       ctx.filePath,
-			Properties: props,
-		})
-		edges = append(edges, &model.Edge{
-			Source:     ctx.modID,
-			Target:     id,
-			Type:       model.EdgeAPICall,
-			Label:      "serves",
-			Confidence: 0.9,
-		})
-	}
-
+	out := &svelteKitEndpoints{ctx: ctx, route: route}
 	for _, exp := range exportedNames(root, ctx.src) {
-		switch {
-		case base == "+server" && svelteKitVerbs[exp.name]:
-			add(exp.name, exp.name+" "+route, map[string]string{}, exp.line)
-		case base == "+page.server" && exp.name == "actions":
-			for _, action := range objectKeys(exp.value, ctx.src) {
-				name := "POST " + route
-				if action.name != "default" {
-					name += "?/" + action.name
-				}
-				add("POST", name, map[string]string{"action": action.name}, action.line)
-			}
+		if base == "+server" {
+			out.addVerb(exp)
+		} else {
+			out.addActions(exp)
 		}
 	}
-	return nodes, edges
+	return out.nodes, out.edges
+}
+
+// svelteKitEndpoints collects the endpoints one route file serves.
+type svelteKitEndpoints struct {
+	ctx   fileCtx
+	route string
+	nodes []*model.Node
+	edges []*model.Edge
+}
+
+// addVerb adds an endpoint when exp is a request handler export (GET, POST…).
+func (s *svelteKitEndpoints) addVerb(exp exported) {
+	if svelteKitVerbs[exp.name] {
+		s.add(exp.name, exp.name+" "+s.route, exp.line, nil)
+	}
+}
+
+// addActions adds one POST endpoint per form action when exp is the
+// "actions" export of a +page.server.ts.
+func (s *svelteKitEndpoints) addActions(exp exported) {
+	if exp.name != "actions" {
+		return
+	}
+	for _, action := range objectKeys(exp.value, s.ctx.src) {
+		name := "POST " + s.route
+		if action.name != "default" {
+			name += "?/" + action.name
+		}
+		s.add("POST", name, action.line, map[string]string{"action": action.name})
+	}
+}
+
+func (s *svelteKitEndpoints) add(method, name string, line int, extra map[string]string) {
+	id := s.ctx.locatedID("endpoint", line)
+	props := map[string]string{
+		"method":    strings.ToLower(method),
+		"route":     s.route,
+		"line":      fmt.Sprintf("%d", line),
+		"framework": "sveltekit",
+	}
+	for k, v := range extra {
+		props[k] = v
+	}
+	s.nodes = append(s.nodes, &model.Node{
+		ID:         id,
+		Name:       name,
+		Type:       model.NodeEndpoint,
+		Language:   "typescript",
+		Path:       s.ctx.filePath,
+		Properties: props,
+	})
+	s.edges = append(s.edges, &model.Edge{
+		Source:     s.ctx.modID,
+		Target:     id,
+		Type:       model.EdgeAPICall,
+		Label:      "serves",
+		Confidence: 0.9,
+	})
 }
 
 // svelteKitRoute derives the URL path a route file serves from its folder:
@@ -90,24 +117,17 @@ func svelteKitRoute(ctx fileCtx) (string, bool) {
 		dir = filepath.ToSlash(filepath.Dir(rel))
 	}
 	segments := strings.Split(dir, "/")
-	start := -1
-	for i, seg := range segments {
-		if seg == "routes" {
-			start = i + 1
-			break
-		}
-	}
-	if start < 0 {
+	routes := slices.Index(segments, "routes")
+	if routes < 0 {
 		return "", false
 	}
-	var parts []string
-	for _, seg := range segments[start:] {
-		if strings.HasPrefix(seg, "(") && strings.HasSuffix(seg, ")") {
-			continue
-		}
-		parts = append(parts, seg)
-	}
+	parts := slices.DeleteFunc(segments[routes+1:], isRouteGroup)
 	return "/" + strings.Join(parts, "/"), true
+}
+
+// isRouteGroup recognizes a "(group)" folder.
+func isRouteGroup(segment string) bool {
+	return strings.HasPrefix(segment, "(") && strings.HasSuffix(segment, ")")
 }
 
 // exported is one name a module exports, with the line it is declared on and,
@@ -118,15 +138,27 @@ type exported struct {
 	value *sitter.Node
 }
 
+// lineOf returns the 1-based line a node starts on.
+func lineOf(n *sitter.Node) int {
+	return int(n.StartPoint().Row) + 1
+}
+
+// namedChildren returns the named children of n that have the given type.
+func namedChildren(n *sitter.Node, nodeType string) []*sitter.Node {
+	var out []*sitter.Node
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		if child := n.NamedChild(i); child.Type() == nodeType {
+			out = append(out, child)
+		}
+	}
+	return out
+}
+
 // exportedNames lists the names exported by top-level export statements:
 // "export function GET", "export const POST = ...", "export { h as PUT }".
 func exportedNames(root *sitter.Node, src []byte) []exported {
 	var out []exported
-	for i := 0; i < int(root.NamedChildCount()); i++ {
-		stmt := root.NamedChild(i)
-		if stmt.Type() != "export_statement" {
-			continue
-		}
+	for _, stmt := range namedChildren(root, "export_statement") {
 		if decl := stmt.ChildByFieldName("declaration"); decl != nil {
 			out = append(out, declaredNames(decl, src)...)
 			continue
@@ -138,25 +170,21 @@ func exportedNames(root *sitter.Node, src []byte) []exported {
 
 // declaredNames returns the names a function or variable declaration binds.
 func declaredNames(decl *sitter.Node, src []byte) []exported {
-	line := int(decl.StartPoint().Row) + 1
-	if decl.Type() != "lexical_declaration" && decl.Type() != "variable_declaration" {
-		if name := decl.ChildByFieldName("name"); name != nil {
-			return []exported{{name: name.Content(src), line: line}}
-		}
-		return nil
+	if decl.Type() == "lexical_declaration" || decl.Type() == "variable_declaration" {
+		return variableNames(decl, src)
 	}
+	if name := decl.ChildByFieldName("name"); name != nil {
+		return []exported{{name: name.Content(src), line: lineOf(decl)}}
+	}
+	return nil
+}
+
+// variableNames returns the names bound by "const a = 1, b = 2".
+func variableNames(decl *sitter.Node, src []byte) []exported {
 	var out []exported
-	for i := 0; i < int(decl.NamedChildCount()); i++ {
-		d := decl.NamedChild(i)
-		if d.Type() != "variable_declarator" {
-			continue
-		}
+	for _, d := range namedChildren(decl, "variable_declarator") {
 		if name := d.ChildByFieldName("name"); name != nil {
-			out = append(out, exported{
-				name:  name.Content(src),
-				line:  int(d.StartPoint().Row) + 1,
-				value: d.ChildByFieldName("value"),
-			})
+			out = append(out, exported{name: name.Content(src), line: lineOf(d), value: d.ChildByFieldName("value")})
 		}
 	}
 	return out
@@ -165,54 +193,68 @@ func declaredNames(decl *sitter.Node, src []byte) []exported {
 // exportClauseNames returns the public names in "export { a, b as c }".
 func exportClauseNames(stmt *sitter.Node, src []byte) []exported {
 	var out []exported
-	for i := 0; i < int(stmt.NamedChildCount()); i++ {
-		clause := stmt.NamedChild(i)
-		if clause.Type() != "export_clause" {
-			continue
-		}
-		for j := 0; j < int(clause.NamedChildCount()); j++ {
-			spec := clause.NamedChild(j)
-			name := spec.ChildByFieldName("alias")
-			if name == nil {
-				name = spec.ChildByFieldName("name")
-			}
-			if name != nil {
-				out = append(out, exported{name: name.Content(src), line: int(spec.StartPoint().Row) + 1})
+	for _, clause := range namedChildren(stmt, "export_clause") {
+		for _, spec := range namedChildren(clause, "export_specifier") {
+			if name := publicName(spec); name != nil {
+				out = append(out, exported{name: name.Content(src), line: lineOf(spec)})
 			}
 		}
 	}
 	return out
 }
 
+// publicName returns the node naming what an export specifier exposes: the
+// alias in "h as PUT", the name itself otherwise.
+func publicName(spec *sitter.Node) *sitter.Node {
+	if alias := spec.ChildByFieldName("alias"); alias != nil {
+		return alias
+	}
+	return spec.ChildByFieldName("name")
+}
+
 // objectKeys returns the property names of an object literal, looking through
 // "satisfies T", "as T" and parentheses around it.
 func objectKeys(value *sitter.Node, src []byte) []exported {
-	for value != nil && value.Type() != "object" {
-		switch value.Type() {
-		case "satisfies_expression", "as_expression", "parenthesized_expression":
-			value = value.NamedChild(0)
-		default:
-			return nil
-		}
-	}
-	if value == nil {
+	obj := objectLiteral(value)
+	if obj == nil {
 		return nil
 	}
 	var out []exported
-	for i := 0; i < int(value.NamedChildCount()); i++ {
-		prop := value.NamedChild(i)
-		var key *sitter.Node
-		switch prop.Type() {
-		case "pair":
-			key = prop.ChildByFieldName("key")
-		case "method_definition":
-			key = prop.ChildByFieldName("name")
-		case "shorthand_property_identifier":
-			key = prop
-		}
-		if key != nil {
-			out = append(out, exported{name: stripQuotes(key.Content(src)), line: int(prop.StartPoint().Row) + 1})
+	for i := 0; i < int(obj.NamedChildCount()); i++ {
+		prop := obj.NamedChild(i)
+		if key := propertyKey(prop); key != nil {
+			out = append(out, exported{name: stripQuotes(key.Content(src)), line: lineOf(prop)})
 		}
 	}
 	return out
+}
+
+// typeWrappers are the expressions an object literal may sit inside.
+var typeWrappers = map[string]bool{
+	"satisfies_expression": true, "as_expression": true, "parenthesized_expression": true,
+}
+
+// objectLiteral unwraps value down to an object literal, or returns nil.
+func objectLiteral(value *sitter.Node) *sitter.Node {
+	for value != nil && typeWrappers[value.Type()] {
+		value = value.NamedChild(0)
+	}
+	if value == nil || value.Type() != "object" {
+		return nil
+	}
+	return value
+}
+
+// propertyKey returns the node naming an object member, or nil for members
+// without a static name (spreads, computed keys).
+func propertyKey(prop *sitter.Node) *sitter.Node {
+	switch prop.Type() {
+	case "pair":
+		return prop.ChildByFieldName("key")
+	case "method_definition":
+		return prop.ChildByFieldName("name")
+	case "shorthand_property_identifier":
+		return prop
+	}
+	return nil
 }

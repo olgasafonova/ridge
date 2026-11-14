@@ -27,6 +27,7 @@ type ArchGenerateArgs struct {
 	ThemeFG        string  `json:"theme_fg,omitempty" jsonschema:"Foreground and text colour for the rendered diagram, as a CSS colour (e.g. #e6edf3)."`
 	PruneThreshold float64 `json:"prune_threshold,omitempty" jsonschema:"Drop nodes whose relative importance falls below this fraction (0 to 1), to thin a dense diagram. Pruned node names are listed in the result. Unset disables pruning."`
 	MinDegree      int     `json:"min_degree,omitempty" jsonschema:"Drop nodes with fewer than this many connected edges. Useful for hiding leaf nodes on a large graph; the result notes when this emptied the diagram. Unset disables the filter."`
+	GroupDepth     int     `json:"group_depth,omitempty" jsonschema:"Collapse files into one box per folder, cut to this many path segments below the scan root (2 gives src/lib, src/routes). Arrows between folders are labelled with the number of file-to-file links they merge. Use on large module graphs. Unset keeps one box per file."`
 	ScanControl
 }
 
@@ -54,6 +55,7 @@ func (h *HandlerRegistry) archGenerate(ctx context.Context, args ArchGenerateArg
 	}
 
 	opts := buildRenderOptions(args)
+	graph = render.GroupByFolder(graph, opts.GroupDepth)
 
 	diagram, err := dispatchRenderer(graph, opts)
 	if err != nil {
@@ -120,6 +122,9 @@ func applyFilterOverrides(opts *render.Options, args ArchGenerateArgs) {
 	}
 	if args.MinDegree > 0 {
 		opts.MinDegree = args.MinDegree
+	}
+	if args.GroupDepth > 0 {
+		opts.GroupDepth = args.GroupDepth
 	}
 }
 

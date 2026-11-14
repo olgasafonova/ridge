@@ -96,15 +96,10 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 		return nil, nil, fmt.Errorf("reading %s: %w", path, err)
 	}
 
-	parser := a.tsParser
-	switch filepath.Ext(path) {
-	case ".tsx":
-		parser = a.tsxParser
-	case svelteExt:
+	if filepath.Ext(path) == svelteExt {
 		src = svelteScriptSource(src)
 	}
-
-	tree, err := parser.ParseCtx(context.Background(), nil, src)
+	tree, err := a.parserFor(path).ParseCtx(context.Background(), nil, src)
 	if err != nil {
 		return nil, nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
@@ -150,6 +145,15 @@ func (a *Analyzer) AnalyzeRooted(scanRoot, path string) ([]*model.Node, []*model
 	}
 
 	return nodes, edges, nil
+}
+
+// parserFor picks the grammar for the file at path. Svelte script blocks and
+// plain TypeScript share one; only .tsx needs the JSX-aware grammar.
+func (a *Analyzer) parserFor(path string) *sitter.Parser {
+	if filepath.Ext(path) == ".tsx" {
+		return a.tsxParser
+	}
+	return a.tsParser
 }
 
 // languageOf names the source language of the file at path for node metadata.
@@ -784,28 +788,49 @@ func httpCallMethod(call *sitter.Node, src []byte) (string, bool) {
 // fetchMethod reads the method from fetch(url, { method: 'POST' }). GET is
 // the default when no options object names one.
 func fetchMethod(call *sitter.Node, src []byte) string {
-	args := call.ChildByFieldName("arguments")
-	if args == nil || args.NamedChildCount() < 2 {
-		return "GET"
-	}
-	opts := args.NamedChild(1)
-	if opts.Type() != "object" {
-		return "GET"
-	}
-	for i := 0; i < int(opts.NamedChildCount()); i++ {
-		pair := opts.NamedChild(i)
-		if pair.Type() != "pair" {
-			continue
-		}
-		key, value := pair.ChildByFieldName("key"), pair.ChildByFieldName("value")
-		if key == nil || value == nil || stripQuotes(key.Content(src)) != "method" {
-			continue
-		}
-		if m := extractStringLiteral(value, src); m != "" {
-			return strings.ToUpper(m)
-		}
+	if m := stringProperty(fetchOptions(call), "method", src); m != "" {
+		return strings.ToUpper(m)
 	}
 	return "GET"
+}
+
+// fetchOptions returns the options object literal passed as the second
+// argument of a fetch call, or nil.
+func fetchOptions(call *sitter.Node) *sitter.Node {
+	args := call.ChildByFieldName("arguments")
+	if args == nil || args.NamedChildCount() < 2 {
+		return nil
+	}
+	if opts := args.NamedChild(1); opts.Type() == "object" {
+		return opts
+	}
+	return nil
+}
+
+// stringProperty returns the string literal assigned to key in an object
+// literal, or "" when obj is nil or has no such property.
+func stringProperty(obj *sitter.Node, key string, src []byte) string {
+	if obj == nil {
+		return ""
+	}
+	for i := 0; i < int(obj.NamedChildCount()); i++ {
+		pair := obj.NamedChild(i)
+		if pair.Type() != "pair" || propertyName(pair.ChildByFieldName("key"), src) != key {
+			continue
+		}
+		if value := pair.ChildByFieldName("value"); value != nil {
+			return extractStringLiteral(value, src)
+		}
+	}
+	return ""
+}
+
+// propertyName returns an object key without its quotes; "" for a nil node.
+func propertyName(key *sitter.Node, src []byte) string {
+	if key == nil {
+		return ""
+	}
+	return stripQuotes(key.Content(src))
 }
 
 func memberHTTPMethod(fn *sitter.Node, src []byte) (string, bool) {

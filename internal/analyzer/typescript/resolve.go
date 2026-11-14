@@ -53,10 +53,15 @@ func relToRoot(root, path string) (string, bool) {
 		return "", false
 	}
 	rel, err := filepath.Rel(root, path)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	if err != nil || leavesRoot(rel) {
 		return "", false
 	}
 	return filepath.ToSlash(rel), true
+}
+
+// leavesRoot reports whether a relative path climbs out of its base.
+func leavesRoot(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // importer identifies the file whose imports are being resolved.
@@ -121,22 +126,7 @@ var jsToTS = map[string][]string{
 // directory index. Files this analyzer does not parse (.json, .css) are not
 // matched, so those imports stay unresolved.
 func resolveModuleFile(base string) (string, bool) {
-	var candidates []string
-	ext := filepath.Ext(base)
-	switch {
-	case ext == ".ts" || ext == ".tsx" || ext == svelteExt:
-		candidates = append(candidates, base)
-	case jsToTS[ext] != nil:
-		stem := strings.TrimSuffix(base, ext)
-		for _, tsExt := range jsToTS[ext] {
-			candidates = append(candidates, stem+tsExt)
-		}
-	}
-	candidates = append(candidates,
-		base+".ts", base+".tsx",
-		filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"),
-	)
-	for _, c := range candidates {
+	for _, c := range moduleFileCandidates(base) {
 		// The candidate comes from an import specifier in scanned source and is
 		// only stat'ed; the caller rejects results outside the scan root.
 		info, err := os.Stat(c) // #nosec G703 -- see comment above
@@ -145,4 +135,25 @@ func resolveModuleFile(base string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// sourceExts are the extensions an import specifier may name outright.
+var sourceExts = map[string]bool{".ts": true, ".tsx": true, svelteExt: true}
+
+// moduleFileCandidates lists the files an import base may refer to, in the
+// order they are tried.
+func moduleFileCandidates(base string) []string {
+	var candidates []string
+	ext := filepath.Ext(base)
+	if sourceExts[ext] {
+		candidates = append(candidates, base)
+	}
+	stem := strings.TrimSuffix(base, ext)
+	for _, tsExt := range jsToTS[ext] {
+		candidates = append(candidates, stem+tsExt)
+	}
+	return append(candidates,
+		base+".ts", base+".tsx",
+		filepath.Join(base, "index.ts"), filepath.Join(base, "index.tsx"),
+	)
 }

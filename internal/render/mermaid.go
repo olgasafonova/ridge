@@ -50,6 +50,7 @@ type Options struct {
 	Theme          Theme   // Optional two-color theme for Mermaid output
 	PruneThreshold float64 // 0 = disabled; 0.5 = prune nodes with fan-in > 50% of sources
 	MinDegree      int     // 0 = disabled; otherwise drop nodes whose total degree (in + out) is below this threshold
+	GroupDepth     int     // 0 = disabled; otherwise the graph was collapsed to folders this many path segments deep (see GroupByFolder)
 }
 
 // DefaultOptions returns sensible rendering defaults.
