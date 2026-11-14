@@ -77,6 +77,53 @@ func TestAnalyzeRooted_SvelteFormActions(t *testing.T) {
 	}
 }
 
+func TestSvelteFormActionEdges_ExpressionsAndDefaultAction(t *testing.T) {
+	src := "<script>\n" +
+		"\tconst f = '<form method=\"POST\">';\n" +
+		"</script>\n" +
+		"<form method=\"POST\" action={pinned ? '?/unpin' : \"?/pin\"}></form>\n" +
+		"<form method=post use:enhance></form>\n" +
+		"<form method=\"POST\" action={'/cases?/close'}></form>\n" +
+		"<form method=\"POST\" action={`?/${name}`}></form>\n" +
+		"<form method=\"POST\" action={'?/' + name}></form>\n" +
+		"<form method=\"POST\" action={target}></form>\n" +
+		"<form method=\"GET\"></form>\n" +
+		"<form></form>\n" +
+		"<form method=\"POST\" use:enhance>\n</form>\n"
+	lines := make(map[string]string)
+	for _, e := range svelteFormActionEdges([]byte(src), "mod:x") {
+		lines[e.Target] = e.Properties["line"]
+	}
+	want := map[string]string{
+		"action:?/unpin":       "4",
+		"action:?/pin":         "4",
+		"action:?/default":     "5", // first POST form without an action
+		"action:/cases?/close": "6",
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("form action edges = %v, want %v", lines, want)
+	}
+	for target, line := range want {
+		if lines[target] != line {
+			t.Errorf("%s on line %q, want %q", target, lines[target], line)
+		}
+	}
+}
+
+// A component that sets formaction may submit its action-less form to named
+// actions only, so it gets no default-action edge.
+func TestSvelteFormActionEdges_FormactionSuppressesDefault(t *testing.T) {
+	src := "<form id=\"row-1\" method=\"POST\"></form>\n" +
+		"<button form=\"row-1\" formaction={busy ? '?/wait' : 'elsewhere'}>Go</button>\n"
+	var targets []string
+	for _, e := range svelteFormActionEdges([]byte(src), "mod:x") {
+		targets = append(targets, e.Target)
+	}
+	if !equalStrings(targets, []string{"action:?/wait"}) {
+		t.Fatalf("targets = %v, want only action:?/wait", targets)
+	}
+}
+
 func TestSvelteFormActionEdges_NoMarkup(t *testing.T) {
 	for _, src := range []string{"", "<script>\nconst a = 'action=\"?/x\"';\n</script>\n", "<p>action</p>"} {
 		if edges := svelteFormActionEdges([]byte(src), "mod:x"); len(edges) != 0 {

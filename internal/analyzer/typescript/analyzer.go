@@ -60,7 +60,7 @@ func (a *Analyzer) Clone() scanner.Analyzer {
 // tsAnalyzerVersion is the cache-invalidation key for this analyzer. Bump it
 // when emitted Nodes/Edges change shape or when detector logic changes
 // (added/removed framework, new infra classification, schema migrations).
-const tsAnalyzerVersion = "ts-v5"
+const tsAnalyzerVersion = "ts-v6"
 
 // Signature returns the analyzer's behavior version used for cache invalidation.
 func (a *Analyzer) Signature() string {

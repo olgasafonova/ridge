@@ -126,6 +126,23 @@ func TestResolvedEdges_FormActionCases(t *testing.T) {
 	}
 }
 
+// A form without an action attribute posts to the "default" action of the
+// page that renders it.
+func TestResolvedEdges_DefaultFormAction(t *testing.T) {
+	g := formGraph()
+	g.AddNode(actionNode("endpoint:case:default", "/app/routes/cases/[id]/+page.server.ts", "/cases/[id]", "default"))
+	g.AddEdge(&Edge{Source: "mod:lib/Bar.svelte", Target: ActionTarget("", "default"), Type: EdgeAPICall, Label: "form"})
+	g.AddEdge(&Edge{Source: "mod:lib/Other.svelte", Target: ActionTarget("", "default"), Type: EdgeAPICall, Label: "form"})
+
+	if got := resolvedTargets(g, "mod:lib/Bar.svelte", "form"); !equalStrings(got, []string{"endpoint:case:default"}) {
+		t.Errorf("Bar: got %v", got)
+	}
+	// The list page renders Other too but declares no default action.
+	if got := resolvedTargets(g, "mod:lib/Other.svelte", "form"); !equalStrings(got, []string{"endpoint:case:default"}) {
+		t.Errorf("Other: got %v", got)
+	}
+}
+
 // An importer whose analyzer records no names counts as using everything.
 func TestResolvedEdges_FormActionThroughUntrackedImport(t *testing.T) {
 	g := NewGraph("/app")

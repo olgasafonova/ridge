@@ -1,6 +1,7 @@
 package typescript
 
 import (
+	"net/url"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -13,9 +14,10 @@ import (
 //	const url = `${API}/search?q=${encodeURIComponent(q)}`;
 //	const res = await fetch(url);
 //
-// urlReader reads such a URL from literals, templates, "+" concatenation and
-// const bindings in the same file. A part only known at run time becomes
-// model.RouteWildcard.
+// urlReader reads such a URL from literals, templates, "+" concatenation,
+// URL objects (new URL(...), url.toString(), url.href) and bindings in the
+// same file: a const, or a let or var nothing assigns to again. A part only
+// known at run time becomes model.RouteWildcard.
 
 // maxURLHops bounds how many const bindings one URL is followed through.
 const maxURLHops = 4
@@ -29,19 +31,115 @@ type urlReader struct {
 // value evaluates expr as a URL. It returns "" when nothing of it is known
 // statically.
 func (r urlReader) value(expr *sitter.Node) string {
-	switch expr.Type() {
-	case "string":
-		return extractStringLiteral(expr, r.src)
-	case "template_string":
-		return r.template(expr)
-	case "binary_expression":
-		return r.concat(expr)
-	case "parenthesized_expression", "template_substitution":
-		return r.inner(expr)
-	case "identifier":
-		return r.bound(expr)
+	if eval, known := urlEvaluators[expr.Type()]; known {
+		return eval(r, expr)
 	}
 	return ""
+}
+
+// urlEvaluators maps the expression types a URL is read from to how each is
+// evaluated.
+var urlEvaluators map[string]func(urlReader, *sitter.Node) string
+
+func init() {
+	urlEvaluators = map[string]func(urlReader, *sitter.Node) string{
+		"string":                   urlReader.literal,
+		"template_string":          urlReader.template,
+		"binary_expression":        urlReader.concat,
+		"parenthesized_expression": urlReader.inner,
+		"template_substitution":    urlReader.inner,
+		"identifier":               urlReader.bound,
+		"new_expression":           urlReader.newURL,
+		"call_expression":          urlReader.stringified,
+		"member_expression":        urlReader.href,
+	}
+}
+
+// literal evaluates a string literal.
+func (r urlReader) literal(str *sitter.Node) string {
+	return extractStringLiteral(str, r.src)
+}
+
+// newURL evaluates new URL(input) and new URL(input, base). A path is
+// resolved against a base that is a known absolute URL or the page's own
+// origin; against any other base it is unknown.
+func (r urlReader) newURL(expr *sitter.Node) string {
+	args := r.urlConstructorArgs(expr)
+	if args == nil {
+		return ""
+	}
+	input := r.value(args.NamedChild(0))
+	if args.NamedChildCount() == 1 || strings.Contains(input, "://") {
+		return input
+	}
+	return r.resolveAgainst(input, args.NamedChild(1))
+}
+
+// urlConstructorArgs returns the arguments of new URL(...), or nil for any
+// other constructor or a call with none.
+func (r urlReader) urlConstructorArgs(expr *sitter.Node) *sitter.Node {
+	ctor := expr.ChildByFieldName("constructor")
+	args := expr.ChildByFieldName("arguments")
+	if anyNil(ctor, args) || ctor.Content(r.src) != "URL" {
+		return nil
+	}
+	if args.NamedChildCount() == 0 {
+		return nil
+	}
+	return args
+}
+
+// resolveAgainst resolves the path input against the base expression.
+func (r urlReader) resolveAgainst(input string, base *sitter.Node) string {
+	if !isSameOriginPath(input) {
+		return ""
+	}
+	if pageOrigins[base.Content(r.src)] {
+		return input
+	}
+	b, err := url.Parse(r.value(base))
+	if err != nil || !b.IsAbs() {
+		return ""
+	}
+	return b.Scheme + "://" + b.Host + input
+}
+
+// pageOrigins are base expressions that stand for the page's own origin.
+var pageOrigins = map[string]bool{
+	"location.origin": true, "location.href": true,
+	"window.location.origin": true, "window.location.href": true,
+}
+
+// stringified evaluates x.toString() and String(x) as the value of x.
+func (r urlReader) stringified(call *sitter.Node) string {
+	fn := call.ChildByFieldName("function")
+	args := call.ChildByFieldName("arguments")
+	if anyNil(fn, args) {
+		return ""
+	}
+	if fn.Content(r.src) == "String" && args.NamedChildCount() == 1 {
+		return r.value(args.NamedChild(0))
+	}
+	if fn.Type() != "member_expression" || args.NamedChildCount() != 0 {
+		return ""
+	}
+	return r.property(fn, "toString")
+}
+
+// href evaluates url.href as the value of url.
+func (r urlReader) href(member *sitter.Node) string {
+	return r.property(member, "href")
+}
+
+// property evaluates obj.<name> as the value of obj, and anything else as
+// unknown.
+func (r urlReader) property(member *sitter.Node, name string) string {
+	obj := member.ChildByFieldName("object")
+	prop := member.ChildByFieldName("property")
+	if anyNil(obj, prop) || prop.Content(r.src) != name {
+		return ""
+	}
+	return r.value(obj)
 }
 
 // template evaluates a template literal. A ${...} that is not itself a known
@@ -120,10 +218,11 @@ func (u nameUse) is(n *sitter.Node) bool {
 	return n != nil && n.Content(u.src) == u.node.Content(u.src)
 }
 
-// constValue finds the value the name was given by a const declaration that
-// is in scope at the use. It returns nil when the name is a parameter or loop
-// variable, is declared with let or var (it may have been reassigned), or is
-// not declared in this file.
+// constValue finds the value the name was given by a declaration that is in
+// scope at the use: a const, or a let or var that nothing in its scope
+// assigns to again. It returns nil when the name is a parameter or loop
+// variable, is assigned to after its declaration, or is not declared in this
+// file.
 func (u nameUse) constValue() *sitter.Node {
 	for scope := u.node.Parent(); scope != nil; scope = scope.Parent() {
 		if value, declared := u.declaredIn(scope); declared {
@@ -137,7 +236,8 @@ func (u nameUse) constValue() *sitter.Node {
 }
 
 // declaredIn looks among the statements directly inside scope, before the
-// use, for a declaration of the name. value is nil unless it is a const.
+// use, for a declaration of the name. value is nil when the name may hold
+// something else by the time it is used.
 func (u nameUse) declaredIn(scope *sitter.Node) (value *sitter.Node, declared bool) {
 	for i := 0; i < int(scope.NamedChildCount()); i++ {
 		stmt := scope.NamedChild(i)
@@ -149,7 +249,7 @@ func (u nameUse) declaredIn(scope *sitter.Node) (value *sitter.Node, declared bo
 			continue
 		}
 		if d := u.declarator(decl); d != nil {
-			return constInitializer(decl, d), true
+			return u.stableInitializer(scope, decl, d), true
 		}
 	}
 	return nil, false
@@ -180,12 +280,44 @@ func variableDeclaration(stmt *sitter.Node) *sitter.Node {
 	return stmt
 }
 
-// constInitializer returns the declarator's value when decl is a const.
-func constInitializer(decl, declarator *sitter.Node) *sitter.Node {
-	if decl.Child(0).Type() != "const" {
+// stableInitializer returns the declarator's value when decl is a const, or
+// a let or var nothing in scope assigns to again.
+func (u nameUse) stableInitializer(scope, decl, declarator *sitter.Node) *sitter.Node {
+	if decl.Child(0).Type() != "const" && u.assignedIn(scope) {
 		return nil
 	}
 	return declarator.ChildByFieldName("value")
+}
+
+// assignmentTargets maps the node types that write to a variable to the
+// field naming what they write: x = ..., x += ..., x++.
+var assignmentTargets = map[string]string{
+	"assignment_expression":           "left",
+	"augmented_assignment_expression": "left",
+	"update_expression":               "argument",
+}
+
+// assignedIn reports whether anything under n writes to the name or to one
+// of its properties (url.pathname = ...).
+func (u nameUse) assignedIn(n *sitter.Node) bool {
+	if field, writes := assignmentTargets[n.Type()]; writes && u.writtenBy(n.ChildByFieldName(field)) {
+		return true
+	}
+	for i := 0; i < int(n.NamedChildCount()); i++ {
+		if u.assignedIn(n.NamedChild(i)) {
+			return true
+		}
+	}
+	return false
+}
+
+// writtenBy reports whether an assignment target is the name or a property
+// of it.
+func (u nameUse) writtenBy(target *sitter.Node) bool {
+	for target != nil && target.Type() == "member_expression" {
+		target = target.ChildByFieldName("object")
+	}
+	return u.is(target)
 }
 
 // binderFields are the fields through which a scope node gives names a new
