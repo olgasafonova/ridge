@@ -64,6 +64,7 @@ Optional theme_bg and theme_fg hex colors (e.g. "#ffffff", "#1e293b") derive a f
 Set prune_threshold (0.0-1.0) to remove ubiquitous nodes like logging or fmt that clutter diagrams. A value of 0.5 removes nodes targeted by more than 50% of source nodes.
 Set min_degree (integer >= 1) to drop nodes whose total in+out degree is below the threshold — useful for knowledge graphs / Obsidian vaults where Mermaid's hierarchical layout breaks down past ~50 nodes. min_degree=5 typically reduces a 300-note vault to its hubs.
 Set group_depth (integer >= 1) to collapse files into one box per folder with the number of imports on each arrow. Use it when a module graph has more boxes than a diagram can show (a few hundred files); group_depth=2 or 3 usually gives a readable layered view.
+Output is capped at 100000 characters by default. A longer diagram comes back cut with truncated=true, total_chars set to the full length, and a note naming the max_chars that returns it whole. HTML and forcegraph exceed the default, so pass max_chars=1000000 for those.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), invalid format name (valid: mermaid, plantuml, c4, structurizr, drawio, excalidraw, json, html, forcegraph).`,
 		Category: "diagram",
 		ReadOnly: true,

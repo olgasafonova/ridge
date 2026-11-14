@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/olgasafonova/ridge/internal/model"
 	"github.com/olgasafonova/ridge/internal/render"
@@ -28,6 +29,7 @@ type ArchGenerateArgs struct {
 	PruneThreshold float64 `json:"prune_threshold,omitempty" jsonschema:"Drop nodes whose relative importance falls below this fraction (0 to 1), to thin a dense diagram. Pruned node names are listed in the result. Unset disables pruning."`
 	MinDegree      int     `json:"min_degree,omitempty" jsonschema:"Drop nodes with fewer than this many connected edges. Useful for hiding leaf nodes on a large graph; the result notes when this emptied the diagram. Unset disables the filter."`
 	GroupDepth     int     `json:"group_depth,omitempty" jsonschema:"Collapse files into one box per folder, cut to this many path segments below the scan root (2 gives src/lib, src/routes). Arrows between folders are labelled with the number of file-to-file links they merge. Use on large module graphs. Unset keeps one box per file."`
+	MaxChars       int     `json:"max_chars,omitempty" jsonschema:"Longest diagram to return, in characters. Omitted or 0 uses the default of 100000. A longer diagram is cut, truncated is set, total_chars gives the full length, and a note names the max_chars that returns it whole. HTML output runs to about 900000 characters and forcegraph to about 290000, so raise this for those formats."`
 	ScanControl
 }
 
@@ -38,9 +40,25 @@ type ArchGenerateResult struct {
 	Summary     string   `json:"summary"`
 	PrunedNodes []string `json:"pruned_nodes,omitempty"`
 	Notes       []string `json:"notes,omitempty"`
+	// Truncated is true when Diagram was cut to the max_chars limit.
+	Truncated bool `json:"truncated,omitempty"`
+	// TotalChars is the length of the full rendered diagram in characters,
+	// before any cut. It equals len(Diagram) in characters when Truncated
+	// is false.
+	TotalChars int `json:"total_chars"`
 }
 
+// DefaultMaxChars is the diagram length arch_generate returns when the caller
+// sets no max_chars. 100000 characters is roughly 25000 tokens, the default
+// MCP output budget in Claude Code, so a default response fits a client's
+// window instead of being spilled or dropped. Follows mediawiki-mcp-server's
+// CharacterLimit + Truncated pattern (wiki/read.go).
+const DefaultMaxChars = 100_000
+
 func (h *HandlerRegistry) archGenerate(ctx context.Context, args ArchGenerateArgs) (*ArchGenerateResult, error) {
+	if args.MaxChars < 0 {
+		return nil, fmt.Errorf("max_chars must be 0 or more, got %d (omit it or pass 0 for the default of %d)", args.MaxChars, DefaultMaxChars)
+	}
 	path, alias, err := h.resolveRepoPath(args.Path, args.Repo)
 	if err != nil {
 		return nil, err
@@ -64,13 +82,48 @@ func (h *HandlerRegistry) archGenerate(ctx context.Context, args ArchGenerateArg
 
 	prunedNodes, notes := buildPruneNotes(graph, opts)
 
-	return &ArchGenerateResult{
+	res := &ArchGenerateResult{
 		Format:      string(opts.Format),
 		Diagram:     diagram,
 		Summary:     graph.Summary(),
 		PrunedNodes: prunedNodes,
 		Notes:       notes,
-	}, nil
+	}
+	applyCharLimit(res, args.MaxChars)
+	return res, nil
+}
+
+// applyCharLimit cuts res.Diagram to maxChars characters (DefaultMaxChars when
+// maxChars is 0), records the full length in TotalChars, and on a cut sets
+// Truncated and appends a note naming the max_chars that returns the whole
+// diagram and the arguments that shrink it instead.
+func applyCharLimit(res *ArchGenerateResult, maxChars int) {
+	limit := maxChars
+	if limit <= 0 {
+		limit = DefaultMaxChars
+	}
+	res.TotalChars = utf8.RuneCountInString(res.Diagram)
+	if res.TotalChars <= limit {
+		return
+	}
+	res.Diagram = truncateRunes(res.Diagram, limit)
+	res.Truncated = true
+	res.Notes = append(res.Notes, fmt.Sprintf(
+		"diagram truncated to %d of %d characters (%.1f%%). Pass max_chars=%d to get it whole, or shrink it with group_depth, min_degree, prune_threshold, a coarser view_level, or arch_focus on a subdirectory. A cut %s diagram is incomplete and may not parse.",
+		limit, res.TotalChars, float64(limit)/float64(res.TotalChars)*100, res.TotalChars, res.Format))
+}
+
+// truncateRunes returns the first n characters of s, cutting on a character
+// boundary so a multi-byte label is never split into invalid UTF-8.
+func truncateRunes(s string, n int) string {
+	count := 0
+	for i := range s {
+		if count == n {
+			return s[:i]
+		}
+		count++
+	}
+	return s
 }
 
 // buildRenderOptions assembles render.Options from arch_generate args, applying

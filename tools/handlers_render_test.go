@@ -2,8 +2,10 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/olgasafonova/ridge/internal/model"
 	"github.com/olgasafonova/ridge/internal/render"
@@ -311,4 +313,126 @@ func TestBuildRenderOptions_GroupDepth(t *testing.T) {
 	if got := buildRenderOptions(ArchGenerateArgs{GroupDepth: -1}).GroupDepth; got != 0 {
 		t.Fatalf("negative group_depth should leave grouping off, got %d", got)
 	}
+}
+
+// charLimitWant is the expected outcome of applyCharLimit on one diagram.
+type charLimitWant struct {
+	diagram   string
+	total     int
+	truncated bool
+}
+
+// TestApplyCharLimit covers the arch_generate output cap: the default limit,
+// an explicit max_chars, the under-limit pass-through, and a cut that lands
+// inside a multi-byte label.
+func TestApplyCharLimit(t *testing.T) {
+	long := strings.Repeat("a", DefaultMaxChars+10)
+
+	tests := []struct {
+		name     string
+		diagram  string
+		maxChars int
+		want     charLimitWant
+	}{
+		{"under the default passes through", "graph TB", 0, charLimitWant{"graph TB", 8, false}},
+		{"exactly at the limit passes through", "abcd", 4, charLimitWant{"abcd", 4, false}},
+		{"over the default is cut to it", long, 0, charLimitWant{long[:DefaultMaxChars], DefaultMaxChars + 10, true}},
+		{"explicit max_chars cuts shorter", "abcdefgh", 3, charLimitWant{"abc", 8, true}},
+		{"explicit max_chars above the length keeps it whole", long, DefaultMaxChars + 10, charLimitWant{long, DefaultMaxChars + 10, false}},
+		{"cut counts characters, not bytes", "søster→æble", 6, charLimitWant{"søster", 11, true}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := &ArchGenerateResult{Format: "mermaid", Diagram: tt.diagram}
+			applyCharLimit(res, tt.maxChars)
+			assertCharLimitFields(t, res, tt.want)
+			assertTruncationNote(t, res.Notes, tt.want)
+		})
+	}
+}
+
+// assertCharLimitFields checks the diagram, total length and truncated flag.
+func assertCharLimitFields(t *testing.T, res *ArchGenerateResult, want charLimitWant) {
+	t.Helper()
+	if res.Diagram != want.diagram {
+		t.Errorf("Diagram = %.40q...; want %.40q...", res.Diagram, want.diagram)
+	}
+	if res.TotalChars != want.total {
+		t.Errorf("TotalChars = %d; want %d", res.TotalChars, want.total)
+	}
+	if res.Truncated != want.truncated {
+		t.Errorf("Truncated = %v; want %v", res.Truncated, want.truncated)
+	}
+}
+
+// assertTruncationNote checks that a cut adds exactly one note naming the
+// max_chars that returns the whole diagram, and that no cut adds none.
+func assertTruncationNote(t *testing.T, notes []string, want charLimitWant) {
+	t.Helper()
+	if !want.truncated {
+		if notes != nil {
+			t.Errorf("no cut, so no note expected; got %v", notes)
+		}
+		return
+	}
+	if len(notes) != 1 {
+		t.Fatalf("expected one truncation note, got %v", notes)
+	}
+	wantHint := fmt.Sprintf("max_chars=%d", want.total)
+	if !strings.Contains(notes[0], wantHint) {
+		t.Errorf("note %q should name %s", notes[0], wantHint)
+	}
+}
+
+// TestApplyCharLimit_KeepsEarlierNotes checks the truncation note is appended
+// after the filter notes rather than replacing them.
+func TestApplyCharLimit_KeepsEarlierNotes(t *testing.T) {
+	res := &ArchGenerateResult{Format: "json", Diagram: "0123456789", Notes: []string{"min_degree note"}}
+	applyCharLimit(res, 5)
+	if len(res.Notes) != 2 || res.Notes[0] != "min_degree note" {
+		t.Fatalf("Notes = %v; want the filter note first, then the truncation note", res.Notes)
+	}
+	if !strings.Contains(res.Notes[1], "json diagram is incomplete") {
+		t.Errorf("truncation note should name the format: %q", res.Notes[1])
+	}
+}
+
+// TestArchGenerate_RejectsNegativeMaxChars checks a negative max_chars fails
+// loud instead of silently falling back to the default.
+func TestArchGenerate_RejectsNegativeMaxChars(t *testing.T) {
+	h := NewHandlerRegistry(testLogger())
+	_, err := h.archGenerate(context.Background(), ArchGenerateArgs{Path: t.TempDir(), MaxChars: -1})
+	if err == nil {
+		t.Fatal("expected an error for max_chars=-1, got nil")
+	}
+	if !strings.Contains(err.Error(), "max_chars must be 0 or more") {
+		t.Errorf("error = %q; want it to name max_chars", err.Error())
+	}
+}
+
+// TestArchGenerate_MaxCharsCutsRealRender runs the cap through the handler on
+// a scanned module: the default render is whole, max_chars=10 cuts it to a
+// 10-character prefix and still reports the full length.
+func TestArchGenerate_MaxCharsCutsRealRender(t *testing.T) {
+	dir := t.TempDir()
+	writeTestFile(t, dir, "go.mod", "module example.com/app\n\ngo 1.22\n")
+	writeTestFile(t, dir, "cmd/api/main.go", "package main\n\nfunc main() {}\n")
+	h := NewHandlerRegistry(testLogger())
+
+	full := mustArchGenerate(t, h, ArchGenerateArgs{Path: dir, ViewLevel: "component"})
+	assertCharLimitFields(t, full, charLimitWant{full.Diagram, utf8.RuneCountInString(full.Diagram), false})
+
+	cut := mustArchGenerate(t, h, ArchGenerateArgs{Path: dir, ViewLevel: "component", MaxChars: 10})
+	assertCharLimitFields(t, cut, charLimitWant{full.Diagram[:10], full.TotalChars, true})
+}
+
+// mustArchGenerate runs archGenerate and fails the test on an error.
+func mustArchGenerate(t *testing.T, h *HandlerRegistry, args ArchGenerateArgs) *ArchGenerateResult {
+	t.Helper()
+	res, err := h.archGenerate(context.Background(), args)
+	if err != nil {
+		t.Fatalf("archGenerate failed: %v", err)
+	}
+	return res
 }
