@@ -26,3 +26,21 @@ type Analyzer interface {
 	// bug fixes that alter emitted Nodes/Edges).
 	Signature() string
 }
+
+// RootedAnalyzer is an optional extension for analyzers whose output depends
+// on where a file sits inside the scanned tree: node IDs built from the
+// root-relative path, or imports resolved against sibling files. The scanner
+// calls AnalyzeRooted instead of Analyze when an analyzer implements it.
+// root is the absolute scan root; it is passed per call rather than stored so
+// one analyzer instance can serve scans of different roots.
+type RootedAnalyzer interface {
+	AnalyzeRooted(root, path string) ([]*model.Node, []*model.Edge, error)
+}
+
+// analyzeFile runs a on path, preferring the root-aware entry point.
+func analyzeFile(a Analyzer, root, path string) ([]*model.Node, []*model.Edge, error) {
+	if ra, ok := a.(RootedAnalyzer); ok {
+		return ra.AnalyzeRooted(root, path)
+	}
+	return a.Analyze(path)
+}

@@ -96,6 +96,7 @@ func New(logger *slog.Logger, analyzers ...Analyzer) *Scanner {
 			"venv":         true,
 			".next":        true,
 			".nuxt":        true,
+			".svelte-kit":  true, // SvelteKit generated types and build output
 			"target":       true, // Rust/Java build output
 		},
 	}
@@ -146,6 +147,7 @@ func (s *Scanner) ScanWithOptions(ctx context.Context, rootPath string, opts Sca
 
 	workers := chooseWorkers(opts.Workers, len(toAnalyze))
 	ac := &analyzeContext{
+		root:     absRoot,
 		state:    state,
 		graph:    graph,
 		stats:    &stats,
