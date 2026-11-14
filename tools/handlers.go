@@ -123,12 +123,13 @@ func (h *HandlerRegistry) RegisteredTools() []ToolSpec {
 
 // ScanControl contains optional fields to control scan behavior.
 type ScanControl struct {
-	MaxFiles    int      `json:"max_files,omitempty" jsonschema:"Stop analyzing after this many files. Use on a large repo to bound scan time; the result is marked truncated when a limit is hit. Unset means no limit."`
-	MaxNodes    int      `json:"max_nodes,omitempty" jsonschema:"Stop adding nodes to the graph after this many. Bounds output size on a large repo; the result is marked truncated when a limit is hit. Unset means no limit."`
-	TimeoutSecs int      `json:"timeout_secs,omitempty" jsonschema:"Abort the scan after this many seconds. Defaults to 120 when unset."`
-	SkipDirs    []string `json:"skip_dirs,omitempty" jsonschema:"Directory names to skip, matched against each path segment (e.g. vendor, node_modules, testdata)."`
-	SkipGlobs   []string `json:"skip_globs,omitempty" jsonschema:"Glob patterns matched against file paths; matching files are skipped (e.g. **/*_test.go, **/generated/**)."`
-	Workers     int      `json:"workers,omitempty" jsonschema:"Number of parallel analyzer workers. Capped at 32. Unset lets the scanner choose."`
+	MaxFiles     int      `json:"max_files,omitempty" jsonschema:"Stop analyzing after this many files. Use on a large repo to bound scan time; the result is marked truncated when a limit is hit. Unset means no limit."`
+	MaxNodes     int      `json:"max_nodes,omitempty" jsonschema:"Stop adding nodes to the graph after this many. Bounds output size on a large repo; the result is marked truncated when a limit is hit. Unset means no limit."`
+	TimeoutSecs  int      `json:"timeout_secs,omitempty" jsonschema:"Abort the scan after this many seconds. Defaults to 120 when unset."`
+	SkipDirs     []string `json:"skip_dirs,omitempty" jsonschema:"Directory names to skip, matched against each path segment (e.g. vendor, node_modules, testdata)."`
+	SkipGlobs    []string `json:"skip_globs,omitempty" jsonschema:"Glob patterns for files to skip. A pattern without a slash matches the file name in any folder (*_test.go). A pattern with a slash matches the path relative to the scan root, where ** stands for any number of folders (**/*.md, **/generated/**, docs/*.md)."`
+	IncludeTests bool     `json:"include_tests,omitempty" jsonschema:"Analyze test code as well. By default test files (*_test.go, *.test.ts, *.spec.ts, test_*.py) and everything under folders named tests, test, __tests__, __mocks__ or testdata are left out, so builders, fakes and stubs do not count as production code."`
+	Workers      int      `json:"workers,omitempty" jsonschema:"Number of parallel analyzer workers. Capped at 32. Unset lets the scanner choose."`
 }
 
 func (sc ScanControl) toScanOptions() scanner.ScanOptions {
@@ -149,6 +150,7 @@ func (sc ScanControl) toScanOptions() scanner.ScanOptions {
 	}
 	opts.SkipDirs = sc.SkipDirs
 	opts.SkipGlobs = sc.SkipGlobs
+	opts.IncludeTests = sc.IncludeTests
 	return opts
 }
 

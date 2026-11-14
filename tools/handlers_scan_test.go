@@ -39,3 +39,25 @@ func TestArchScan_MutualExclusion_RepoAndPaths(t *testing.T) {
 		t.Errorf("error = %q; want %q", err.Error(), want)
 	}
 }
+
+// include_tests reaches the scanner, and a scan with tests is cached apart
+// from one without.
+func TestScanControl_IncludeTests(t *testing.T) {
+	without := ScanControl{}.toScanOptions()
+	with := ScanControl{IncludeTests: true}.toScanOptions()
+	if without.IncludeTests || !with.IncludeTests {
+		t.Fatalf("IncludeTests = %v and %v, want false and true", without.IncludeTests, with.IncludeTests)
+	}
+	if scanOptsKey(without) == scanOptsKey(with) {
+		t.Fatalf("cache key %q is the same with and without tests", scanOptsKey(with))
+	}
+}
+
+// Scan is the route the command-line mode takes into arch_scan.
+func TestScan_SameChecksAsArchScan(t *testing.T) {
+	h := NewHandlerRegistry(testLogger())
+	_, err := h.Scan(context.Background(), ArchScanArgs{Path: "/a", Paths: []string{"/b"}})
+	if err == nil {
+		t.Fatal("Scan accepted both path and paths")
+	}
+}

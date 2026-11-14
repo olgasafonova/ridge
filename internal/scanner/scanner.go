@@ -20,15 +20,24 @@ type ScanOptions struct {
 	MaxNodes     int           // 0 = unlimited
 	Timeout      time.Duration // 0 = no timeout
 	SkipDirs     []string      // additional dirs to skip (merged with defaults)
-	SkipGlobs    []string      // filepath.Match patterns to skip (e.g. "*_test.go")
-	IncludeTests bool          // if true, don't skip test files (default: skip them)
+	SkipGlobs    []string      // patterns to skip: "*_test.go" by file name, "**/generated/**" by path (see glob.go)
+	IncludeTests bool          // if true, don't skip test files and test folders (default: skip them)
 	Workers      int           // 0 = runtime.NumCPU(), capped at 8
 	State        *ScanState    // non-nil enables incremental scanning (reuse cached results for unchanged files)
 }
 
-// defaultTestGlobs are file patterns excluded by default to avoid test fixtures
+// defaultTestGlobs are file patterns excluded by default to avoid test code
 // polluting the architecture graph. Set IncludeTests=true to override.
+//
+// The folder patterns cover what sits next to the tests without a test file
+// name: builders, fakes, stubs and fixtures. They apply to folders below the
+// scan root, so scanning a tests folder directly still analyzes it.
 var defaultTestGlobs = []string{
+	"**/tests/**",
+	"**/test/**",
+	"**/__tests__/**",
+	"**/__mocks__/**",
+	"**/testdata/**",
 	"*_test.go",
 	"*.test.ts",
 	"*.test.tsx",

@@ -55,8 +55,8 @@ func (h *HandlerRegistry) cachedScan(ctx context.Context, path, alias string, op
 // scanOptsKey builds a deterministic cache-key suffix from the limit and
 // skip-pattern fields of ScanOptions.
 func scanOptsKey(opts scanner.ScanOptions) string {
-	return fmt.Sprintf("%d|%d|%d|%s|%s",
-		opts.MaxFiles, opts.MaxNodes, opts.Workers,
+	return fmt.Sprintf("%d|%d|%d|%t|%s|%s",
+		opts.MaxFiles, opts.MaxNodes, opts.Workers, opts.IncludeTests,
 		strings.Join(opts.SkipDirs, ","),
 		strings.Join(opts.SkipGlobs, ","),
 	)
@@ -132,6 +132,12 @@ type ArchScanResult struct {
 	Summary   string             `json:"summary"`
 	Stats     *scanner.ScanStats `json:"stats,omitempty"`
 	Truncated bool               `json:"truncated,omitempty"`
+}
+
+// Scan runs arch_scan outside an MCP session. The scan subcommand of the
+// binary uses it, so both routes return the same result for the same args.
+func (h *HandlerRegistry) Scan(ctx context.Context, args ArchScanArgs) (*ArchScanResult, error) {
+	return h.archScan(ctx, args)
 }
 
 func (h *HandlerRegistry) archScan(ctx context.Context, args ArchScanArgs) (*ArchScanResult, error) {

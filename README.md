@@ -270,9 +270,25 @@ All scan tools accept optional parameters for handling large codebases:
 | `timeout_secs` | Cancel scan after N seconds |
 | `workers` | Parallel analysis workers (default: CPU count, max 8) |
 | `skip_dirs` | Additional directories to skip (beyond defaults like `node_modules`, `.git`, `vendor`) |
-| `skip_globs` | File patterns to skip (e.g. `*_test.go`, `*.spec.ts`) |
+| `include_tests` | Analyze test code too. By default test files (`*_test.go`, `*.test.ts`, `test_*.py`) and everything under folders named `tests`, `test`, `__tests__`, `__mocks__` or `testdata` are left out |
+| `skip_globs` | File patterns to skip. Without a slash the pattern matches the file name in any folder (`*_test.go`, `*.spec.ts`); with a slash it matches the path from the scan root, and `**` stands for any number of folders (`**/*.md`, `**/generated/**`) |
 
 Partial results include a `truncated: true` flag so you know the graph is incomplete. Sequential tool calls on the same path are cached for 30 seconds.
+
+## Command-line scan
+
+The binary can also run one scan without an MCP client and write the whole graph as JSON. Use it when the output is too large to pass through a tool call.
+
+```bash
+code-to-arch scan /path/to/project                      # JSON on stdout
+code-to-arch scan -out scan.json /path/to/project       # JSON in a file
+code-to-arch scan -skip-glob '**/*.md' -include-tests .
+code-to-arch scan -repo my-alias -out scan.json
+```
+
+The output has the same fields as `arch_scan` with `detail: "full"`, with no cap on the number of nodes and edges. Flags: `-out`, `-repo`, `-include-tests`, `-samples`, `-max-files`, `-max-nodes`, `-timeout`, and the repeatable `-skip-dir` and `-skip-glob`. `code-to-arch scan -h` lists them.
+
+Exit code 0 means the scan was written, 1 means the scan or the write failed, 2 means the command line was wrong. Run with no command, the binary is the MCP server.
 
 ## Incremental scanning
 

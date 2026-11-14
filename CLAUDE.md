@@ -5,6 +5,7 @@ Go MCP server that scans codebases, generates architecture diagrams, and detects
 
 ## Architecture
 - `cmd/ridge/main.go` - entry point with stdio transport
+- `cmd/ridge/scan.go` - `code-to-arch scan <path>`: one scan to JSON on stdout or `-out file`, no MCP client
 - `internal/model/` - ArchGraph, Node, Edge, Diff types (core data model)
 - `internal/scanner/` - File walker, orchestrator, sample-snippet population (`samples.go`)
 - `internal/analyzer/golang/` - Go AST-based analysis (import-based deps, stdlib HTTP endpoints, infra classification)

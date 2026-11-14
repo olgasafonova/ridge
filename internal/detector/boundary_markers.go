@@ -12,7 +12,7 @@ var boundaryClassifiers = map[string]markerClassifier{
 	"nx.json":             func(m *boundaryMarkers, _ string) { m.hasNxJSON = true },
 	"turbo.json":          func(m *boundaryMarkers, _ string) { m.hasTurboJSON = true },
 	"rush.json":           func(m *boundaryMarkers, _ string) { m.hasRushJSON = true },
-	"pnpm-workspace.yaml": func(m *boundaryMarkers, _ string) { m.hasPnpmWorkspace = true },
+	"pnpm-workspace.yaml": func(m *boundaryMarkers, rel string) { m.pnpmWorkspaces = append(m.pnpmWorkspaces, rel) },
 	"Dockerfile":          appendDockerfile,
 	"dockerfile":          appendDockerfile,
 	"docker-compose.yml":  setHasDockerCompose,

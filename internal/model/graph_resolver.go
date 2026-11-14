@@ -1,6 +1,9 @@
 package model
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // ResolvedEdges returns edges with import:/wikilink:/route: targets rewritten
 // to the concrete node IDs they reference. Unresolvable edges are dropped.
@@ -68,7 +71,9 @@ type relPath string
 type rootPrefix string
 
 // targetResolver maps edge targets with "import:" / "wikilink:" prefixes
-// to concrete node IDs by matching against node Path suffixes.
+// to concrete node IDs by matching against node Path suffixes. When several
+// nodes match, the closest match wins and the lowest node ID breaks a tie, so
+// the same graph always resolves the same way.
 type targetResolver struct {
 	refs          []pathRef
 	importCache   map[relPath]string // "" = unresolvable
@@ -80,8 +85,9 @@ type pathRef struct {
 	id  string
 }
 
-// matchFunc reports whether key resolves to ref.
-type matchFunc func(key relPath, ref pathRef) bool
+// matchFunc scores how well key resolves to ref. 0 means no match; among
+// matches the highest score wins.
+type matchFunc func(key relPath, ref pathRef) int
 
 func newTargetResolver(nodes map[string]*Node, root string) *targetResolver {
 	prefix := newRootPrefix(root)
@@ -91,6 +97,8 @@ func newTargetResolver(nodes map[string]*Node, root string) *targetResolver {
 			refs = append(refs, ref)
 		}
 	}
+	// Map iteration order is random; equal scores go to the lowest ID.
+	sort.Slice(refs, func(i, j int) bool { return refs[i].id < refs[j].id })
 	return &targetResolver{
 		refs:          refs,
 		importCache:   make(map[relPath]string),
@@ -121,39 +129,56 @@ func nodeRef(n *Node, prefix rootPrefix) (pathRef, bool) {
 // resolve returns (resolvedID, ok). Unprefixed targets pass through unchanged.
 func (r *targetResolver) resolve(target string) (string, bool) {
 	if path, ok := strings.CutPrefix(target, "import:"); ok {
-		return r.lookup(relPath(path), r.importCache, importMatches)
+		return r.lookup(relPath(path), r.importCache, importScore)
 	}
 	if name, ok := strings.CutPrefix(target, "wikilink:"); ok {
-		return r.lookup(relPath(name), r.wikilinkCache, wikilinkMatches)
+		return r.lookup(relPath(name), r.wikilinkCache, wikilinkScore)
 	}
 	return target, true
 }
 
-func (r *targetResolver) lookup(key relPath, cache map[relPath]string, match matchFunc) (string, bool) {
+func (r *targetResolver) lookup(key relPath, cache map[relPath]string, score matchFunc) (string, bool) {
 	if id, cached := cache[key]; cached {
 		return id, id != ""
 	}
+	bestID, best := "", 0
 	for _, ref := range r.refs {
-		if match(key, ref) {
-			cache[key] = ref.id
-			return ref.id, true
+		if s := score(key, ref); s > best {
+			bestID, best = ref.id, s
 		}
 	}
-	cache[key] = ""
-	return "", false
+	cache[key] = bestID
+	return bestID, bestID != ""
 }
 
-func importMatches(key relPath, ref pathRef) bool {
-	return key == ref.rel || strings.HasSuffix(string(key), "/"+string(ref.rel))
+// importScore matches an import path against a node path that equals it or is
+// its tail ("github.com/acme/app/internal/db" against "internal/db"). The
+// longest tail wins: "internal/db" over a top-level "db".
+func importScore(key relPath, ref pathRef) int {
+	if key == ref.rel || strings.HasSuffix(string(key), "/"+string(ref.rel)) {
+		return len(ref.rel) + 1
+	}
+	return 0
 }
 
-func wikilinkMatches(key relPath, ref pathRef) bool {
+// Wikilink scores. A tail match loses one point per folder the note sits
+// in, so of several notes with the same name the one closest to the root wins.
+const (
+	wikilinkFullPath = 2_000_000 // the link names the note's whole path
+	wikilinkPathTail = 1_000_000 // the link names the end of the path, or the file only
+)
+
+// wikilinkScore matches a wikilink against a note path, with or without its
+// folders: [[note]] and [[folder/note]] both find "docs/folder/note.md".
+func wikilinkScore(key relPath, ref pathRef) int {
 	stem := strings.TrimSuffix(string(ref.rel), ".md")
 	stem = strings.TrimSuffix(stem, ".markdown")
-	base := stem
-	if i := strings.LastIndex(stem, "/"); i >= 0 {
-		base = stem[i+1:]
-	}
 	target := string(key)
-	return base == target || stem == target || strings.HasSuffix(stem, "/"+target)
+	switch {
+	case stem == target:
+		return wikilinkFullPath
+	case strings.HasSuffix(stem, "/"+target):
+		return wikilinkPathTail - strings.Count(stem, "/")
+	}
+	return 0
 }
