@@ -21,6 +21,8 @@ import (
 
 // cachedScan checks the cache before running a full scan.
 // When alias is non-empty, loads/saves incremental scan state and updates registry metadata.
+// Those writes are cache state under ~/.mcp-context/, not changes to the
+// scanned code, which is why the scan tools stay readOnlyHint=true.
 // Returns the result even on ErrLimitReached (partial result).
 func (h *HandlerRegistry) cachedScan(ctx context.Context, path, alias string, opts scanner.ScanOptions) (*scanner.ScanResult, error) {
 	absPath, err := filepath.Abs(path)

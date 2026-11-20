@@ -190,10 +190,15 @@ func register[Args, Result any](
 			Title:          spec.Title,
 			ReadOnlyHint:   spec.ReadOnly,
 			IdempotentHint: spec.Idempotent,
+			// Always sent: an omitted openWorldHint defaults to true in the
+			// MCP spec, which would mislabel these local-only tools.
+			OpenWorldHint: ptr(spec.OpenWorld),
 		},
 	}
-	if spec.OpenWorld {
-		tool.Annotations.OpenWorldHint = ptr(true)
+	// destructiveHint is meaningful only for non-read-only tools, and an
+	// omitted value defaults to true, so send the real value for those.
+	if !spec.ReadOnly {
+		tool.Annotations.DestructiveHint = ptr(spec.Destructive)
 	}
 
 	mcp.AddTool(server, tool, func(ctx context.Context, req *mcp.CallToolRequest, args Args) (callResult *mcp.CallToolResult, result Result, retErr error) {
