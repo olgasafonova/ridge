@@ -105,7 +105,8 @@ func (h *HandlerRegistry) archDrift(ctx context.Context, args ArchDriftArgs) (*m
 // checkoutAndScan checks out a git ref into a worktree and scans it with the
 // ref's scan options. Both refs of a drift get the same options, so the two
 // graphs stay comparable. The returned cleanup must be deferred by the
-// caller. role is used in error messages ("base" / "head") so failures point
+// caller. The worktree is transient (removed by cleanup), so the drift tools
+// stay readOnlyHint=true. role is used in error messages ("base" / "head") so failures point
 // at the right argument.
 func (h *HandlerRegistry) checkoutAndScan(ctx context.Context, ref commitScan, role string) (*model.ArchGraph, func(), error) {
 	worktree, cleanup, err := drift.CheckoutRef(ctx, ref.repoPath, ref.hash)

@@ -87,7 +87,7 @@ func TestToolMethodsAreUnique(t *testing.T) {
 	}
 }
 
-// ptr backs the optional OpenWorldHint annotation in register()
+// ptr backs the OpenWorldHint and DestructiveHint annotations in register()
 // (handlers.go), where *bool distinguishes "unset" from "false". The
 // contract that matters is that each call returns a pointer to its own
 // copy, so no two annotations alias the same bool.

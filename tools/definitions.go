@@ -2,6 +2,20 @@
 package tools
 
 // ToolSpec defines a tool's metadata for declarative registration.
+//
+// register() emits every annotation hint explicitly, so a field left at its
+// zero value is sent as false rather than omitted (omitted would mean the MCP
+// spec defaults: destructive=true, openWorld=true). Destructive is only sent
+// for non-read-only tools; TestEmittedAnnotations pins the expected value for
+// each of them, so a new writing tool cannot ship without a deliberate choice.
+//
+// ReadOnly marks tools that do not modify the user's environment. Several
+// read-only tools still make incidental side writes that are not the tool's
+// purpose: scans with repo=alias persist incremental scan state and refresh
+// registry metadata under ~/.mcp-context/code-to-arch/, and arch_drift /
+// arch_drift_explain / arch_history check refs out into temporary git
+// worktrees that are removed afterwards. These are cache and transient
+// writes, so the tools stay readOnly.
 type ToolSpec struct {
 	Name        string
 	Method      string
@@ -9,8 +23,9 @@ type ToolSpec struct {
 	Title       string
 	Category    string
 	ReadOnly    bool
+	Destructive bool // meaningful only when ReadOnly is false
 	Idempotent  bool
-	OpenWorld   bool
+	OpenWorld   bool // false for every current tool: local files and local git only
 }
 
 // ptr creates a pointer to a value.
@@ -175,9 +190,10 @@ Returns a list of violations with severity and suggested fixes.
 Ratchet mode for legacy codebases: baseline="write" grandfathers current violations into .arch-known-violations.json (commit it); baseline="check" then fails only on NEW violations — valid reflects new_violations only, while violations always lists everything including grandfathered ones. Override the file location with baseline_file (must stay inside the scanned repo).
 For numeric health scores (coupling, instability), use arch_metrics instead.
 FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), baseline="check" without a baseline file (run baseline="write" first). Returns empty violations list if no problems found (that's a good result, not an error).`,
-		Category:   "validation",
-		ReadOnly:   false, // baseline="write" saves a known-violations file
-		Idempotent: true,
+		Category:    "validation",
+		ReadOnly:    false, // baseline="write" saves a known-violations file
+		Destructive: true,  // baseline="write" overwrites an existing known-violations file
+		Idempotent:  true,
 	},
 	{
 		Name:   "arch_history",
@@ -199,9 +215,12 @@ FAILS WHEN: directory is not a git repository. Produces minimal output if the re
 USE WHEN the user wants to establish a reference point, like "save this as our v2.0 architecture."
 Writes a JSON snapshot file that arch_diff can compare against.
 WARNING: Overwrites any existing snapshot for this project directory without confirmation.
-FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), target directory (~/.mcp-context/) is not writable.`,
-		Category: "export",
-		ReadOnly: false, // writes a snapshot file
+Writes to <path>/architecture.snapshot.json by default; pass output_file to choose another location inside the scanned directory.
+FAILS WHEN: no architecture data loaded (run arch_scan or arch_focus first), the output file is outside the scanned directory or its location is not writable.`,
+		Category:    "export",
+		ReadOnly:    false, // writes a snapshot file
+		Destructive: true,  // overwrites an existing snapshot file
+		Idempotent:  true,  // same args rewrite the same file
 	},
 	{
 		Name:   "arch_metrics",
@@ -251,7 +270,9 @@ USE WHEN the user wants to avoid passing the full path every time, or wants pers
 Pass the absolute path and an optional alias (defaults to the directory basename).
 Aliases persist to ~/.mcp-context/code-to-arch/registry.json.
 FAILS WHEN: path doesn't exist or is not a directory, alias is already registered (pick a different alias).`,
-		Category: "registry",
+		Category:    "registry",
+		Destructive: false, // additive: refuses an alias that already exists
+		Idempotent:  false, // a repeat call with the same alias fails
 	},
 	{
 		Name:   "arch_registry_remove",
@@ -261,7 +282,9 @@ FAILS WHEN: path doesn't exist or is not a directory, alias is already registere
 USE WHEN the user no longer needs an alias, or wants to re-register a path under a different name.
 Also deletes any persisted incremental scan state for the alias.
 FAILS WHEN: alias not found in registry.`,
-		Category: "registry",
+		Category:    "registry",
+		Destructive: true, // deletes the alias and its persisted scan state
+		Idempotent:  true, // removing an alias twice leaves the same end state
 	},
 	{
 		Name:   "arch_registry_list",
